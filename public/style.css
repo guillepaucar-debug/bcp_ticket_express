@@ -1,0 +1,18 @@
+:root{--azul:#002A8D;--naranja:#FF7800;--fondo:#F3F5FA;--tinta:#14213D;--borde:#D5DBEA;--ok:#0E8A4F}
+*{box-sizing:border-box}
+body{margin:0;font-family:"IBM Plex Sans",system-ui,sans-serif;background:var(--fondo);color:var(--tinta)}
+header{background:var(--azul);color:#fff;padding:14px 20px;font-weight:600;font-size:18px}
+main{max-width:460px;margin:0 auto;padding:20px}
+.card{background:#fff;border:1px solid var(--borde);border-radius:10px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:17px}
+label{display:block;font-size:14px;margin:10px 0 4px}
+select,input,button{width:100%;font:inherit;padding:11px;border-radius:8px;border:1px solid var(--borde)}
+button{background:var(--azul);color:#fff;border:0;font-weight:600;cursor:pointer;margin-top:12px}
+button:hover{background:#001d66} button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid var(--naranja)}
+.agencia{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--borde);font-size:14px}
+.ticket{text-align:center}.ticket .num{font-size:44px;font-weight:700;color:var(--azul);margin:0}
+.estado{display:inline-block;padding:4px 12px;border-radius:20px;background:#E3E9FA;font-weight:600;font-size:14px}
+.estado.EN_SALA,.estado.ATENDIENDO{background:#D7F2E3;color:var(--ok)}
+.push{background:var(--naranja);color:#fff;padding:12px 16px;border-radius:8px;font-weight:600;margin-bottom:14px}
+.hidden{display:none}
+@media (prefers-reduced-motion:no-preference){.push{animation:in .3s}}@keyframes in{from{transform:translateY(-8px);opacity:0}}

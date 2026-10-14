@@ -1,0 +1,17 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BCP Ticket Express · Ventanilla</title><link rel="stylesheet" href="style.css"></head><body>
+<header>Pantalla de ventanilla</header>
+<main><div class="card">
+  <label for="ag">Agencia</label>
+  <select id="ag"><option value="0101">Miraflores</option><option value="0102">San Isidro</option><option value="0103">Centro de Lima</option></select>
+  <button id="sig">Llamar siguiente turno</button>
+  <p id="out"></p>
+</div></main>
+<script>
+document.getElementById('sig').onclick = async () => {
+  const r = await fetch(`/api/v1/agencies/${document.getElementById('ag').value}/next`, { method: 'POST' });
+  const d = await r.json();
+  document.getElementById('out').textContent = r.ok ? `Atendiendo turno #${d.atendiendo}. En cola: ${d.enCola}` : d.error;
+};
+</script></body></html>

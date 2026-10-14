@@ -1,0 +1,34 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BCP Ticket Express · Tótem</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script></head><body>
+<header>Tótem de bienvenida</header>
+<main>
+  <div class="card"><h2>Acerca tu código QR a la cámara</h2><div id="reader"></div></div>
+  <div id="msg" class="card hidden"></div>
+  <details class="card"><summary>Prueba manual (sin cámara)</summary>
+    <label for="manual">Texto del QR</label><input id="manual" placeholder="bcp://ticket?id=T001&agencia=0101&hash=...">
+    <button id="enviar">Validar</button></details>
+</main>
+<script>
+const msg = document.getElementById('msg');
+let ocupado = false;
+
+async function validar(payload) {
+  if (ocupado) return; ocupado = true;
+  const r = await fetch('/api/v1/tickets/validate', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payload }) });
+  const d = await r.json();
+  msg.classList.remove('hidden');
+  msg.innerHTML = r.ok
+    ? `<h2 style="color:var(--ok)">Bienvenido</h2><p>Turno <b>${d.id}</b> registrado "En sala". Turnos antes que tú: ${d.turnosPrevios}.</p>`
+    : `<h2 style="color:#B3261E">No pudimos validar tu turno</h2><p>${d.error}</p>`;
+  setTimeout(() => { ocupado = false; msg.classList.add('hidden'); }, 4000);
+}
+
+new Html5Qrcode('reader')
+  .start({ facingMode: 'user' }, { fps: 10, qrbox: 240 }, validar)
+  .catch(() => { document.getElementById('reader').textContent = 'No se pudo abrir la cámara. Usa la prueba manual.'; });
+document.getElementById('enviar').onclick = () => validar(document.getElementById('manual').value.trim());
+</script></body></html>

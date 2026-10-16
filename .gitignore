@@ -1,12 +1,2 @@
+firebase-key.json
 node_modules/
-.env
-npm-debug.log*
-.firebase/
-firebase-debug.log
-public/firebase.key.json
-
-node_modules/
-
-# Claves privadas de Firebase
-firebase.key.json
-*-firebase-adminsdk-*.json

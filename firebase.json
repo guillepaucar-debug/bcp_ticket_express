@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "bcpticketexpress",
     "public": "public",
     "ignore": [
       "firebase.json",

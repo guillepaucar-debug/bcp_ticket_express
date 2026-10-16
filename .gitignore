@@ -5,3 +5,7 @@ npm-debug.log*
 firebase-debug.log
 
 node_modules/
+
+# Claves privadas de Firebase
+firebase.key.json
+*-firebase-adminsdk-*.json

@@ -65,7 +65,7 @@
         window.location.assign(result.role === 'admin' ? '/ventanilla.html' : '/app.html');
       } catch (error) {
         message.textContent = error instanceof TypeError
-          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          ? 'No se pudo conectar con la API. Si el servidor gratuito estaba dormido, espera ~50 segundos y vuelve a intentar. Si persiste, revisa config.js y FRONTEND_ORIGINS en Render.'
           : error.message || 'No se pudo iniciar sesión.';
         message.classList.remove('hidden');
       } finally {

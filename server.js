@@ -40,18 +40,26 @@ const getFirebaseWebApiKey = () => {
   return apiKey;
 };
 
+const stripSlash = (url) => url.trim().replace(/\/+$/, '');
 const allowedOrigins = new Set([
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+  // Firebase Hosting del proyecto (ver firebase.json)
+  'https://bcpticketexpress.web.app',
+  'https://bcpticketexpress.firebaseapp.com',
+  // Render define esta variable automáticamente con la URL pública del servicio
+  ...(process.env.RENDER_EXTERNAL_URL ? [stripSlash(process.env.RENDER_EXTERNAL_URL)] : []),
   ...(process.env.FRONTEND_ORIGINS || '')
     .split(',')
-    .map((origin) => origin.trim())
+    .map(stripSlash)
     .filter(Boolean),
 ]);
 
 app.use((req, res, next) => {
   const origin = req.get('Origin');
-  if (origin && !allowedOrigins.has(origin)) {
+  // Si la página se sirve desde este mismo servidor, el origen siempre es válido
+  const isSameOrigin = origin === `${req.protocol}://${req.get('host')}`;
+  if (origin && !isSameOrigin && !allowedOrigins.has(origin)) {
     return res.status(403).json({ error: 'Origen web no autorizado. Revisa FRONTEND_ORIGINS en el backend.' });
   }
   if (origin) {

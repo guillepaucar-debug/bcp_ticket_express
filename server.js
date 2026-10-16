@@ -3,6 +3,8 @@ import 'dotenv/config';
 import express from 'express';
 import crypto from 'crypto';
 import QRCode from 'qrcode';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -14,15 +16,29 @@ const SECRET = process.env.TICKET_SECRET || crypto.randomBytes(32).toString('hex
 const PUSH_THRESHOLD = 3; // avisar cuando restan 3 turnos
 const AGENCY_ID_PATTERN = /^[A-Za-z0-9-]+$/;
 const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
-const accounts = {
-  user: { username: process.env.USER_USERNAME, password: process.env.USER_PASSWORD },
-  admin: { username: process.env.ADMIN_USERNAME, password: process.env.ADMIN_PASSWORD },
-};
 const sessions = new Map();
 const sessionCookieName = (role) => `bcp_${role}_session`;
 
 app.use(express.json({ limit: '1mb' }));
 if (isProduction) app.set('trust proxy', 1);
+
+const getFirebaseAuth = () => {
+  const serviceAccountValue = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!serviceAccountValue) throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON no está configurada');
+  const serviceAccount = JSON.parse(serviceAccountValue);
+  serviceAccount.private_key = serviceAccount.private_key?.replace(/\\n/g, '\n');
+
+  const firebaseApp = getApps()[0] || initializeApp({
+    credential: cert(serviceAccount),
+  });
+  return getAuth(firebaseApp);
+};
+
+const getFirebaseWebApiKey = () => {
+  const apiKey = process.env.FIREBASE_WEB_API_KEY;
+  if (!apiKey) throw new Error('FIREBASE_WEB_API_KEY no está configurada');
+  return apiKey;
+};
 
 const allowedOrigins = new Set([
   'http://localhost:3000',
@@ -98,48 +114,98 @@ const requireApiRole = (role) => (req, res, next) => {
   return res.status(403).json({ error: `Se requiere acceso de ${role === 'admin' ? 'administrador' : 'usuario'}` });
 };
 
-const secureStringEquals = (provided, expected) => {
-  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
-  const providedHash = crypto.createHash('sha256').update(provided).digest();
-  const expectedHash = crypto.createHash('sha256').update(expected).digest();
-  return crypto.timingSafeEqual(providedHash, expectedHash);
-};
-
 app.get('/app.html', requireRole('user'));
 app.get('/ventanilla.html', requireRole('admin'));
 app.get('/totem.html', requireRole('admin'));
 app.use(express.static('public'));
 
-app.post('/api/v1/auth/login', (req, res) => {
-  const { username, password, role } = req.body || {};
-  if (!['user', 'admin'].includes(role)) {
-    return res.status(400).json({ error: 'Selecciona el tipo de acceso' });
+app.post('/api/v1/auth/login', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  if (!email || typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'Ingresa tu correo y contraseña' });
   }
 
-  const account = accounts[role];
-  if (!account.username || !account.password) {
-    return res.status(503).json({ error: 'Faltan configurar las credenciales de acceso en el servidor' });
+  try {
+    const apiKey = getFirebaseWebApiKey();
+    const authResponse = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const authResult = await authResponse.json();
+    if (!authResponse.ok) {
+      if (authResponse.status === 400) {
+        return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+      }
+      console.error('Firebase Authentication sign-in failed:', authResult.error?.message || authResponse.status);
+      return res.status(502).json({ error: 'No se pudo verificar la cuenta con Firebase Authentication' });
+    }
+
+    const decodedToken = await getFirebaseAuth().verifyIdToken(authResult.idToken);
+    const role = decodedToken.role;
+    if (!['user', 'admin'].includes(role)) {
+      return res.status(403).json({ error: 'La cuenta todavía no tiene un rol asignado. Contacta al administrador.' });
+    }
+
+    const cookieName = sessionCookieName(role);
+    const previousSessionId = req.headers.cookie?.match(
+      new RegExp(`(?:^|;\\s*)${cookieName}=([a-f0-9]+)`),
+    )?.[1];
+    if (previousSessionId) sessions.delete(previousSessionId);
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    sessions.set(sessionId, {
+      uid: decodedToken.uid,
+      role,
+      username: decodedToken.email || email,
+      expiresAt: Date.now() + SESSION_MAX_AGE_MS,
+    });
+    res.setHeader(
+      'Set-Cookie',
+      `${cookieName}=${sessionId}; Path=/; HttpOnly; SameSite=${isProduction ? 'None' : 'Lax'}; Max-Age=${SESSION_MAX_AGE_MS / 1000}${isProduction ? '; Secure' : ''}`,
+    );
+    res.json({ role, username: decodedToken.email || email });
+  } catch (error) {
+    console.error('Firebase login configuration or verification failed:', error.message);
+    res.status(503).json({ error: 'No se pudo conectar con Firebase. Revisa la configuración del backend.' });
   }
-  if (!secureStringEquals(username, account.username) || !secureStringEquals(password, account.password)) {
-    return res.status(401).json({ error: 'Usuario o contraseña incorrectos' });
+});
+
+app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim() : '';
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Ingresa un correo electrónico válido' });
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+  if (!displayName || displayName.length > 80) {
+    return res.status(400).json({ error: 'Ingresa un nombre de hasta 80 caracteres' });
   }
 
-  const cookieName = sessionCookieName(role);
-  const previousSessionId = req.headers.cookie?.match(
-    new RegExp(`(?:^|;\\s*)${cookieName}=([a-f0-9]+)`),
-  )?.[1];
-  if (previousSessionId) sessions.delete(previousSessionId);
-  const sessionId = crypto.randomBytes(32).toString('hex');
-  sessions.set(sessionId, {
-    role,
-    username: account.username,
-    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
-  });
-  res.setHeader(
-    'Set-Cookie',
-    `${cookieName}=${sessionId}; Path=/; HttpOnly; SameSite=${isProduction ? 'None' : 'Lax'}; Max-Age=${SESSION_MAX_AGE_MS / 1000}${isProduction ? '; Secure' : ''}`,
-  );
-  res.json({ role, username: account.username });
+  try {
+    const auth = getFirebaseAuth();
+    const newUser = await auth.createUser({ email, password, displayName });
+    try {
+      await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
+    } catch (error) {
+      await auth.deleteUser(newUser.uid);
+      throw error;
+    }
+    res.status(201).json({ uid: newUser.uid, email: newUser.email, displayName: newUser.displayName, role: 'user' });
+  } catch (error) {
+    if (error.code === 'auth/email-already-exists') {
+      return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+    }
+    console.error('Firebase user creation failed:', error.message);
+    res.status(502).json({ error: 'No se pudo crear la cuenta en Firebase Authentication' });
+  }
 });
 
 app.get('/api/v1/auth/me', (req, res) => {

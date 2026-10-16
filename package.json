@@ -2,6 +2,14 @@
   "name": "bcp-ticket-express",
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "dotenv": "^16.4.7", "express": "^4.19.2", "qrcode": "^1.5.4" }
+  "scripts": {
+    "start": "node server.js",
+    "set-admin": "node scripts/set-admin-role.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.19.2",
+    "firebase-admin": "^14.5.0",
+    "qrcode": "^1.5.4"
+  }
 }

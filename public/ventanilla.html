@@ -93,6 +93,32 @@
       </div>
     </section>
 
+    <section class="card user-management-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ADMINISTRACIÓN DE CUENTAS</p>
+          <h2>Crear usuario normal</h2>
+        </div>
+      </div>
+      <p class="muted">La cuenta se guardará en Firebase Authentication con permisos de usuario. No podrá entrar a esta pantalla de administración.</p>
+      <form id="create-user-form" class="create-user-form">
+        <div>
+          <label for="new-user-name">Nombre</label>
+          <input id="new-user-name" name="displayName" type="text" maxlength="80" autocomplete="name" required>
+        </div>
+        <div>
+          <label for="new-user-email">Correo electrónico</label>
+          <input id="new-user-email" name="email" type="email" autocomplete="email" required>
+        </div>
+        <div>
+          <label for="new-user-password">Contraseña temporal</label>
+          <input id="new-user-password" name="password" type="password" minlength="8" autocomplete="new-password" required>
+        </div>
+        <button id="create-user-button" type="submit">Crear cuenta de usuario</button>
+      </form>
+      <p id="create-user-result" class="validation-result hidden" role="status" aria-live="polite"></p>
+    </section>
+
     <section class="card history-card">
       <div class="section-heading">
         <div>
@@ -144,6 +170,47 @@
         window.location.assign('/login.html?role=admin');
       } catch (error) {
         showNotice(error.message || 'No se pudo cerrar la sesión.', true);
+      }
+    });
+
+    $('#create-user-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const submitButton = $('#create-user-button');
+      const result = $('#create-user-result');
+      submitButton.disabled = true;
+      submitButton.textContent = 'Creando cuenta…';
+      result.classList.add('hidden');
+
+      try {
+        const response = await fetch(`${api}/admin/users`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            displayName: $('#new-user-name').value,
+            email: $('#new-user-email').value,
+            password: $('#new-user-password').value,
+          }),
+        });
+        const createdUser = await readJson(response);
+        if (!response.ok) throw new Error(createdUser.error || 'No se pudo crear el usuario.');
+
+        result.textContent = `Cuenta creada para ${createdUser.displayName} (${createdUser.email}). Ya puede iniciar sesión como usuario.`;
+        result.classList.remove('validation-error');
+        result.classList.add('validation-success');
+        result.classList.remove('hidden');
+        form.reset();
+      } catch (error) {
+        result.textContent = error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo crear el usuario.';
+        result.classList.remove('validation-success');
+        result.classList.add('validation-error');
+        result.classList.remove('hidden');
+      } finally {
+        submitButton.disabled = false;
+        submitButton.textContent = 'Crear cuenta de usuario';
       }
     });
 

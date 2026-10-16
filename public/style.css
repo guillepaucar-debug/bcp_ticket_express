@@ -491,6 +491,29 @@ summary {
   padding: 22px 24px;
 }
 
+.user-management-card {
+  padding: 22px 24px;
+}
+
+.user-management-card > .muted {
+  margin: -4px 0 14px;
+}
+
+.create-user-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: end;
+  gap: 4px 14px;
+}
+
+.create-user-form label {
+  margin-top: 8px;
+}
+
+.create-user-form button {
+  margin-bottom: 0;
+}
+
 .validation-card > .muted {
   margin: -4px 0 16px;
 }
@@ -703,6 +726,14 @@ summary {
 
   .validation-card {
     padding: 18px 14px;
+  }
+
+  .user-management-card {
+    padding: 18px 14px;
+  }
+
+  .create-user-form {
+    grid-template-columns: 1fr;
   }
 
   .validation-layout {

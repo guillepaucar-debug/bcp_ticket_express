@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BCP Ticket Express · App Banca Móvil</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <header class="user-header">
+    <span>BCP Ticket Express</span>
+    <div class="header-actions">
+      <a class="header-link" href="/ventanilla.html" target="_blank" rel="noopener">Abrir administrador ↗</a>
+      <button id="logout" class="logout-button" type="button">Cerrar sesión</button>
+    </div>
+  </header>
+  <main class="hidden">
+    <div id="push" class="push hidden"></div>
+
+    <section id="paso1" class="card">
+      <h2>Elige tu agencia</h2>
+      <div id="lista">Buscando agencias cercanas…</div>
+      <label for="ag">Agencia</label>
+      <select id="ag"></select>
+      <label for="tr">Trámite</label>
+      <select id="tr">
+        <option value="Caja / Depósitos">Caja / Depósitos</option>
+        <option value="Atención al cliente">Atención al cliente</option>
+        <option value="Créditos">Créditos</option>
+        <option value="Apertura de cuenta">Apertura de cuenta</option>
+      </select>
+      <button id="pedir">Sacar turno</button>
+    </section>
+
+    <section id="paso2" class="card ticket hidden">
+      <h2>Tu turno</h2>
+      <p class="num" id="tid"></p>
+      <p><span id="estado" class="estado"></span></p>
+      <p id="previos"></p>
+      <img id="qr" alt="Código QR de tu turno" width="240" height="240">
+      <p style="font-size:13px">Muestra este código QR al administrador para validar tu llegada.</p>
+    </section>
+  </main>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+    const api = `${apiBaseUrl}/api/v1`;
+    let eventSource = null;
+
+    $('#logout').addEventListener('click', async () => {
+      try {
+        const response = await fetch(`${api}/auth/logout`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'user' }),
+        });
+        if (!response.ok) throw new Error('No se pudo cerrar la sesión.');
+        eventSource?.close();
+        window.location.assign('/login.html?role=user');
+      } catch (error) {
+        window.alert(error.message || 'No se pudo cerrar la sesión.');
+      }
+    });
+
+    const etiquetas = {
+      ESPERANDO: 'En espera',
+      EN_SALA: 'En sala',
+      ATENDIENDO: 'Te están atendiendo',
+      ATENDIDO: 'Atendido'
+    };
+
+    function mostrarError(mensaje) {
+      $('#lista').textContent = mensaje;
+      $('#pedir').disabled = true;
+      $('#pedir').textContent = 'No disponible';
+    }
+
+    async function leerRespuesta(respuesta) {
+      const tipo = respuesta.headers.get('content-type') || '';
+      if (!tipo.includes('application/json')) {
+        await respuesta.text();
+        throw new Error(`La API devolvió una respuesta inesperada (HTTP ${respuesta.status}). Revisa la URL del backend en config.js.`);
+      }
+      return respuesta.json();
+    }
+
+    function resetearNotificacion() {
+      $('#push').textContent = '';
+      $('#push').classList.add('hidden');
+    }
+
+    function pintar(t) {
+      const ticket = t || {};
+      const estado = ticket.estado || 'ESPERANDO';
+      const turnosPrevios = Number(ticket.turnosPrevios ?? 0);
+
+      $('#estado').textContent = etiquetas[estado] || estado;
+      $('#estado').className = `estado ${estado}`;
+      $('#previos').textContent = ['ESPERANDO', 'EN_SALA'].includes(estado)
+        ? `Turnos antes que tú: ${turnosPrevios}`
+        : '';
+    }
+
+    function actualizarListaAgencias(data) {
+      const agencias = Array.isArray(data) ? data : [];
+
+      if (!agencias.length) {
+        mostrarError('No se encontraron agencias disponibles en este momento.');
+        return;
+      }
+
+      $('#lista').innerHTML = agencias.map(a => {
+        const distancia = a.distanciaKm != null ? ` · ${a.distanciaKm} km` : '';
+        const direccion = a.direccion ? `<small>${a.direccion}</small>` : '';
+        return `
+          <div class="agencia">
+            <span>${a.nombre}${distancia}</span>
+            <span>${a.enCola} en cola · ~${a.tiempoEstimadoMin} min</span>
+            ${direccion}
+          </div>
+        `;
+      }).join('');
+
+      $('#ag').innerHTML = agencias.map(a => `<option value="${a.id}">${a.nombre}</option>`).join('');
+      $('#pedir').disabled = false;
+      $('#pedir').textContent = 'Sacar turno';
+    }
+
+    async function cargarAgencias(lat = null, lng = null) {
+      try {
+        const q = lat != null && lng != null ? `?lat=${lat}&lng=${lng}` : '';
+        const respuesta = await fetch(`${api}/agencies${q}`, { credentials: 'include' });
+
+        if (!respuesta.ok) {
+          throw new Error('No se pudo cargar la lista de agencias.');
+        }
+
+        const data = await leerRespuesta(respuesta);
+        actualizarListaAgencias(data);
+      } catch (error) {
+        console.error(error);
+        mostrarError(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo cargar la lista de agencias.');
+      }
+    }
+
+    async function startUserWindow() {
+      try {
+        const response = await fetch(`${api}/auth/me?role=user`, { credentials: 'include' });
+        if (response.status === 401 || response.status === 403) {
+          window.location.replace('/login.html?role=user');
+          return;
+        }
+        if (!response.ok) throw new Error('No se pudo verificar la sesión.');
+
+        document.querySelector('main').classList.remove('hidden');
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            ({ coords }) => cargarAgencias(coords.latitude, coords.longitude),
+            () => cargarAgencias()
+          );
+        } else {
+          cargarAgencias();
+        }
+      } catch (error) {
+        document.querySelector('main').classList.remove('hidden');
+        mostrarError(error.message || 'No se pudo conectar con el servidor.');
+      }
+    }
+
+    $('#pedir').onclick = async () => {
+      const agenciaId = $('#ag').value;
+      const tramite = $('#tr').value;
+
+      if (!agenciaId) {
+        mostrarError('Selecciona una agencia antes de continuar.');
+        return;
+      }
+
+      $('#pedir').disabled = true;
+      $('#pedir').textContent = 'Generando turno…';
+      resetearNotificacion();
+
+      try {
+        const respuesta = await fetch(`${api}/tickets`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agencyId: agenciaId, tramite })
+        });
+
+        const payload = await leerRespuesta(respuesta);
+
+        if (!respuesta.ok) {
+          throw new Error(payload.error || 'No se pudo generar el turno.');
+        }
+
+        const ticket = payload;
+        $('#paso1').classList.add('hidden');
+        $('#paso2').classList.remove('hidden');
+        $('#tid').textContent = ticket.id;
+        $('#qr').src = ticket.qr;
+        pintar(ticket);
+
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission().catch(() => {});
+        }
+
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        eventSource = new EventSource(`${api}/tickets/${ticket.agencia}/${ticket.id}/events`, {
+          withCredentials: true,
+        });
+        eventSource.addEventListener('estado', (event) => {
+          try {
+            pintar(JSON.parse(event.data));
+          } catch (error) {
+            console.error('Error al procesar evento de estado:', error);
+          }
+        });
+
+        eventSource.addEventListener('push', (event) => {
+          try {
+            const push = JSON.parse(event.data);
+            $('#push').textContent = `${push.mensaje} — restan ${push.restan} turnos`;
+            $('#push').classList.remove('hidden');
+
+            if (Notification.permission === 'granted' && push.titulo) {
+              new Notification(push.titulo, { body: push.mensaje });
+            }
+          } catch (error) {
+            console.error('Error al procesar evento push:', error);
+          }
+        });
+
+        eventSource.onerror = () => {
+          $('#push').textContent = 'Se perdió la conexión con la fila en tiempo real.';
+          $('#push').classList.remove('hidden');
+        };
+      } catch (error) {
+        console.error(error);
+        $('#paso1').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        mostrarError(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo generar el turno.');
+      } finally {
+        $('#pedir').disabled = false;
+        $('#pedir').textContent = 'Sacar turno';
+      }
+    };
+
+    startUserWindow();
+  </script>
+</body>
+</html>

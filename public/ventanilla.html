@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BCP Ticket Express · Ventanilla</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body class="ventanilla-page">
+  <header class="ventanilla-header">
+    <span class="header-mark" aria-hidden="true">BCP</span>
+    <span>Panel de ventanilla</span>
+    <span class="live-indicator"><span></span> En vivo</span>
+    <div class="header-actions">
+      <a class="header-link" href="/app.html" target="_blank" rel="noopener">Abrir vista usuario ↗</a>
+      <button id="logout" class="logout-button" type="button">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <main class="ventanilla-main hidden">
+    <section class="card counter-controls">
+      <div>
+        <p class="eyebrow">OPERACIÓN DE AGENCIA</p>
+        <h1>Control de turnos</h1>
+        <p id="agency-address" class="muted">Selecciona una agencia para comenzar.</p>
+      </div>
+      <div class="counter-actions">
+        <label for="ag">Agencia</label>
+        <select id="ag" aria-label="Seleccionar agencia"></select>
+        <button id="sig" type="button">Llamar siguiente turno</button>
+      </div>
+    </section>
+
+    <p id="notice" class="board-notice hidden" role="status" aria-live="polite"></p>
+
+    <section class="counter-overview" aria-label="Resumen de turnos">
+      <article class="current-counter">
+        <div class="current-counter-heading">
+          <div>
+            <p class="eyebrow">TURNO ACTUAL</p>
+            <h2 id="current-number">—</h2>
+          </div>
+          <span class="counter-status" id="current-status">Sin atención</span>
+        </div>
+        <div class="current-counter-details">
+          <div>
+            <span class="detail-label">Trámite</span>
+            <strong id="current-service">Esperando el próximo turno</strong>
+          </div>
+          <div>
+            <span class="detail-label">Llamado a atención</span>
+            <strong id="current-time">—</strong>
+          </div>
+        </div>
+      </article>
+
+      <div class="counter-stats">
+        <article class="stat-card">
+          <span class="stat-icon" aria-hidden="true">↗</span>
+          <span class="detail-label">En cola</span>
+          <strong id="queue-count">0</strong>
+          <span class="stat-caption">turnos pendientes</span>
+        </article>
+        <article class="stat-card">
+          <span class="stat-icon stat-icon-orange" aria-hidden="true">✓</span>
+          <span class="detail-label">Atendidos</span>
+          <strong id="served-count">0</strong>
+          <span class="stat-caption">en esta agencia</span>
+        </article>
+      </div>
+    </section>
+
+    <section class="card validation-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ACCESO A LA AGENCIA</p>
+          <h2>Validar ticket QR</h2>
+        </div>
+        <span class="history-count">Solo tickets pendientes</span>
+      </div>
+      <p class="muted">Escanea el QR para registrar la llegada antes de llamar al turno. Si ya fue llamado, el panel te lo indicará.</p>
+      <div class="validation-layout">
+        <div id="admin-qr-reader" aria-label="Lector de código QR"></div>
+        <div class="validation-actions">
+          <button id="camera-button" class="secondary-button" type="button">Activar cámara</button>
+          <label for="qr-payload">Contenido del QR</label>
+          <input id="qr-payload" type="text" autocomplete="off" placeholder="bcp://ticket?id=T001&agencia=0101&hash=...">
+          <button id="validate-button" type="button">Validar ticket</button>
+          <p id="validation-result" class="validation-result hidden" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card history-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">ACTIVIDAD RECIENTE</p>
+          <h2>Historial de turnos</h2>
+        </div>
+        <span id="history-count" class="history-count">Últimos 10</span>
+      </div>
+      <div class="history-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Turno</th>
+              <th scope="col">Trámite</th>
+              <th scope="col">Estado</th>
+              <th scope="col">Hora de llamado</th>
+            </tr>
+          </thead>
+          <tbody id="history-body">
+            <tr><td class="empty-history" colspan="4">Todavía no hay turnos atendidos.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const agencySelect = $('#ag');
+    const nextButton = $('#sig');
+    const notice = $('#notice');
+    const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+    const api = `${apiBaseUrl}/api/v1`;
+    let pollTimer;
+    let qrScanner;
+    let cameraActive = false;
+    let validating = false;
+    let lastValidatedPayload = '';
+
+    $('#logout').addEventListener('click', async () => {
+      try {
+        const response = await fetch(`${api}/auth/logout`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'admin' }),
+        });
+        if (!response.ok) throw new Error('No se pudo cerrar la sesión.');
+        window.location.assign('/login.html?role=admin');
+      } catch (error) {
+        showNotice(error.message || 'No se pudo cerrar la sesión.', true);
+      }
+    });
+
+    async function readJson(response) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        await response.text();
+        throw new Error(`La API devolvió una respuesta inesperada (HTTP ${response.status}). Revisa la URL del backend en config.js.`);
+      }
+      return response.json();
+    }
+
+    function formatTime(timestamp) {
+      if (!timestamp) return '—';
+      return new Intl.DateTimeFormat('es-PE', {
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(timestamp));
+    }
+
+    function showNotice(message, isError = false) {
+      notice.textContent = message;
+      notice.classList.toggle('notice-error', isError);
+      notice.classList.remove('hidden');
+    }
+
+    function renderHistory(history) {
+      const body = $('#history-body');
+      body.replaceChildren();
+
+      if (!history.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 4;
+        cell.className = 'empty-history';
+        cell.textContent = 'Todavía no hay turnos atendidos.';
+        return;
+      }
+
+      for (const ticket of history) {
+        const row = body.insertRow();
+        const numberCell = row.insertCell();
+        numberCell.className = 'history-ticket';
+        numberCell.textContent = ticket.id;
+        row.insertCell().textContent = ticket.tramite;
+
+        const statusCell = row.insertCell();
+        const badge = document.createElement('span');
+        badge.className = 'history-badge';
+        badge.textContent = 'Atendido';
+        statusCell.append(badge);
+
+        row.insertCell().textContent = formatTime(ticket.llamado);
+      }
+    }
+
+    function renderBoard(board) {
+      $('#agency-address').textContent = board.agencia.direccion;
+      $('#current-number').textContent = board.atendiendo?.id || '—';
+      $('#current-status').textContent = board.atendiendo ? 'En atención' : 'Sin atención';
+      $('#current-status').classList.toggle('is-active', Boolean(board.atendiendo));
+      $('#current-service').textContent = board.atendiendo?.tramite || 'Esperando el próximo turno';
+      $('#current-time').textContent = formatTime(board.atendiendo?.llamado);
+      $('#queue-count').textContent = board.enCola;
+      $('#served-count').textContent = board.totalAtendidos;
+      renderHistory(board.historial);
+    }
+
+    function showValidationResult(message, success) {
+      const result = $('#validation-result');
+      result.textContent = message;
+      result.classList.toggle('validation-success', success);
+      result.classList.toggle('validation-error', !success);
+      result.classList.remove('hidden');
+    }
+
+    async function validateTicket(payload) {
+      const normalizedPayload = typeof payload === 'string' ? payload.trim() : '';
+      if (!normalizedPayload || validating || normalizedPayload === lastValidatedPayload) return;
+
+      validating = true;
+      $('#validate-button').disabled = true;
+      $('#validation-result').classList.add('hidden');
+
+      try {
+        const response = await fetch(`${api}/tickets/validate`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payload: normalizedPayload, agencyId: agencySelect.value }),
+        });
+        const result = await readJson(response);
+        if (!response.ok) throw new Error(result.error || 'No se pudo validar el ticket.');
+
+        lastValidatedPayload = normalizedPayload;
+        $('#qr-payload').value = normalizedPayload;
+        if (result.yaValidado) {
+          showValidationResult(`El ticket ${result.id} ya estaba validado. El usuario está registrado en sala.`, true);
+        } else if (result.yaLlamado) {
+          showValidationResult(`El turno ${result.id} ya fue llamado y está en atención. No es necesario validarlo de nuevo.`, true);
+        } else {
+          showValidationResult(
+            `Ticket ${result.id} validado. El usuario quedó registrado en sala; tiene ${result.turnosPrevios} turnos antes.`,
+            true,
+          );
+        }
+        if (cameraActive) {
+          try {
+            await qrScanner.stop();
+          } catch (error) {
+            console.error('No se pudo detener la cámara después de leer el QR:', error);
+          }
+          cameraActive = false;
+          $('#camera-button').textContent = 'Activar cámara';
+        }
+        await loadBoard();
+      } catch (error) {
+        showValidationResult(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo validar el ticket.', false);
+      } finally {
+        validating = false;
+        $('#validate-button').disabled = false;
+      }
+    }
+
+    async function toggleCamera() {
+      const cameraButton = $('#camera-button');
+      if (cameraActive) {
+        await qrScanner.stop();
+        cameraActive = false;
+        cameraButton.textContent = 'Activar cámara';
+        return;
+      }
+
+      if (!window.Html5Qrcode) {
+        showValidationResult('No se pudo cargar el lector QR. Puedes pegar el contenido del código manualmente.', false);
+        return;
+      }
+
+      try {
+        qrScanner = qrScanner || new Html5Qrcode('admin-qr-reader');
+        await qrScanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          (decodedText) => validateTicket(decodedText),
+        );
+        cameraActive = true;
+        cameraButton.textContent = 'Detener cámara';
+      } catch (error) {
+        showValidationResult(`No se pudo activar la cámara: ${error.message || 'verifica los permisos del navegador'}.`, false);
+      }
+    }
+
+    async function loadBoard() {
+      const agencyId = agencySelect.value;
+      if (!agencyId) return;
+
+      try {
+        const response = await fetch(`${api}/agencies/${encodeURIComponent(agencyId)}/board`, {
+          credentials: 'include',
+        });
+        const board = await readJson(response);
+        if (!response.ok) throw new Error(board.error || 'No se pudo cargar el panel.');
+        renderBoard(board);
+        notice.classList.add('hidden');
+      } catch (error) {
+        showNotice(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo actualizar el panel.', true);
+      }
+    }
+
+    async function loadAgencies() {
+      try {
+        const response = await fetch(`${api}/agencies`, { credentials: 'include' });
+        const agencies = await readJson(response);
+        if (!response.ok || !Array.isArray(agencies) || !agencies.length) {
+          throw new Error('No se pudo cargar la lista de agencias.');
+        }
+
+        agencySelect.replaceChildren();
+        for (const agency of agencies) {
+          const option = document.createElement('option');
+          option.value = agency.id;
+          option.textContent = agency.nombre;
+          agencySelect.append(option);
+        }
+
+        await loadBoard();
+        pollTimer = window.setInterval(loadBoard, 5000);
+      } catch (error) {
+        showNotice(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo cargar la lista de agencias.', true);
+        nextButton.disabled = true;
+      }
+    }
+
+    agencySelect.addEventListener('change', loadBoard);
+    $('#camera-button').addEventListener('click', toggleCamera);
+    $('#validate-button').addEventListener('click', () => validateTicket($('#qr-payload').value));
+    $('#qr-payload').addEventListener('input', () => {
+      if ($('#qr-payload').value.trim() !== lastValidatedPayload) {
+        $('#validation-result').classList.add('hidden');
+      }
+    });
+    nextButton.addEventListener('click', async () => {
+      nextButton.disabled = true;
+      nextButton.textContent = 'Llamando turno…';
+      notice.classList.add('hidden');
+
+      try {
+        const response = await fetch(`${api}/agencies/${encodeURIComponent(agencySelect.value)}/next`, {
+          method: 'POST',
+          credentials: 'include',
+        });
+        const result = await readJson(response);
+        if (!response.ok) throw new Error(result.error || 'No se pudo llamar al siguiente turno.');
+        await loadBoard();
+        showNotice(`Turno ${result.turno} llamado correctamente.`);
+      } catch (error) {
+        showNotice(error.message || 'No se pudo llamar al siguiente turno.', true);
+        await loadBoard();
+      } finally {
+        nextButton.disabled = false;
+        nextButton.textContent = 'Llamar siguiente turno';
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      window.clearInterval(pollTimer);
+      if (cameraActive) qrScanner.stop();
+    });
+
+    async function startAdminWindow() {
+      try {
+        const response = await fetch(`${api}/auth/me?role=admin`, { credentials: 'include' });
+        if (response.status === 401 || response.status === 403) {
+          window.location.replace('/login.html?role=admin');
+          return;
+        }
+        if (!response.ok) throw new Error('No se pudo verificar la sesión de administrador.');
+
+        $('main').classList.remove('hidden');
+        await loadAgencies();
+      } catch (error) {
+        $('main').classList.remove('hidden');
+        showNotice(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo conectar con el servidor.', true);
+        nextButton.disabled = true;
+      }
+    }
+
+    startAdminWindow();
+  </script>
+</body>
+</html>

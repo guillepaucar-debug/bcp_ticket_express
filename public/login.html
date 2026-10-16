@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Acceso · BCP Ticket Express</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+</head>
+<body class="login-page">
+  <header>BCP Ticket Express</header>
+  <main class="login-main">
+    <section class="card login-card">
+      <p class="eyebrow">ACCESO SEGURO</p>
+      <h1>Iniciar sesión</h1>
+      <p class="muted">Elige tu tipo de cuenta. Usuario y administrador tienen permisos separados.</p>
+
+      <form id="login-form">
+        <label for="role">Tipo de acceso</label>
+        <select id="role" name="role" required>
+          <option value="user">Usuario</option>
+          <option value="admin">Administrador</option>
+        </select>
+
+        <label for="username">Usuario</label>
+        <input id="username" name="username" type="text" autocomplete="username" required>
+
+        <label for="password">Contraseña</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <button id="login-button" type="submit">Ingresar</button>
+        <p id="login-message" class="login-message hidden" role="alert"></p>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    const form = document.querySelector('#login-form');
+    const roleSelect = document.querySelector('#role');
+    const message = document.querySelector('#login-message');
+    const loginButton = document.querySelector('#login-button');
+    const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+
+    const requestedRole = new URLSearchParams(window.location.search).get('role');
+    if (['user', 'admin'].includes(requestedRole)) roleSelect.value = requestedRole;
+
+    async function readJson(response) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        await response.text();
+        throw new Error(`La API devolvió una respuesta inesperada (HTTP ${response.status}). Revisa la URL del backend en config.js.`);
+      }
+      return response.json();
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      message.classList.add('hidden');
+      loginButton.disabled = true;
+      loginButton.textContent = 'Verificando…';
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            role: roleSelect.value,
+            username: document.querySelector('#username').value,
+            password: document.querySelector('#password').value,
+          }),
+        });
+        const result = await readJson(response);
+        if (!response.ok) throw new Error(result.error || 'No se pudo iniciar sesión.');
+
+        window.location.assign(result.role === 'admin' ? '/ventanilla.html' : '/app.html');
+      } catch (error) {
+        message.textContent = error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo iniciar sesión.';
+        message.classList.remove('hidden');
+      } finally {
+        loginButton.disabled = false;
+        loginButton.textContent = 'Ingresar';
+      }
+    });
+  </script>
+</body>
+</html>

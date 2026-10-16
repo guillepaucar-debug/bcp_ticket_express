@@ -1,2 +1,2 @@
-firebase-key.json
-node_modules/
+firebase.key.json
+*-firebase-adminsdk-*.json

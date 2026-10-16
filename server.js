@@ -146,10 +146,23 @@ app.post('/api/v1/auth/login', async (req, res) => {
     );
     const authResult = await authResponse.json();
     if (!authResponse.ok) {
-      if (authResponse.status === 400) {
+      const firebaseError = authResult.error?.message || String(authResponse.status);
+      console.error('Firebase Authentication sign-in failed:', firebaseError);
+      if (['INVALID_LOGIN_CREDENTIALS', 'EMAIL_NOT_FOUND', 'INVALID_PASSWORD', 'INVALID_EMAIL'].includes(firebaseError)) {
         return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
       }
-      console.error('Firebase Authentication sign-in failed:', authResult.error?.message || authResponse.status);
+      if (firebaseError === 'OPERATION_NOT_ALLOWED') {
+        return res.status(502).json({ error: 'En Firebase Authentication no está habilitado el acceso con correo y contraseña' });
+      }
+      if (firebaseError === 'USER_DISABLED') {
+        return res.status(403).json({ error: 'Esta cuenta está deshabilitada' });
+      }
+      if (firebaseError.startsWith('TOO_MANY_ATTEMPTS')) {
+        return res.status(429).json({ error: 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo' });
+      }
+      if (/API key/i.test(firebaseError)) {
+        return res.status(502).json({ error: 'FIREBASE_WEB_API_KEY no es válida. Revísala en Render' });
+      }
       return res.status(502).json({ error: 'No se pudo verificar la cuenta con Firebase Authentication' });
     }
 

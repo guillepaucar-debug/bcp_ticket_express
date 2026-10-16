@@ -195,6 +195,40 @@ app.post('/api/v1/auth/login', async (req, res) => {
   }
 });
 
+app.post('/api/v1/auth/register', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim() : '';
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ error: 'Ingresa un correo electrónico válido' });
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+  if (!displayName || displayName.length > 80) {
+    return res.status(400).json({ error: 'Ingresa un nombre de hasta 80 caracteres' });
+  }
+
+  try {
+    const auth = getFirebaseAuth();
+    const newUser = await auth.createUser({ email, password, displayName });
+    try {
+      await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
+    } catch (error) {
+      await auth.deleteUser(newUser.uid);
+      throw error;
+    }
+    res.status(201).json({ email: newUser.email, displayName: newUser.displayName, role: 'user' });
+  } catch (error) {
+    if (error.code === 'auth/email-already-exists') {
+      return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
+    }
+    console.error('Firebase self-registration failed:', error.message);
+    res.status(502).json({ error: 'No se pudo crear la cuenta en Firebase Authentication' });
+  }
+});
+
 app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = req.body?.password;

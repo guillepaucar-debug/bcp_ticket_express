@@ -11,28 +11,61 @@
   <header>BCP Ticket Express</header>
   <main class="login-main">
     <section class="card login-card">
-      <p class="eyebrow">ACCESO SEGURO</p>
-      <h1>Iniciar sesión</h1>
-      <p class="muted">Ingresa tu cuenta. El sistema abrirá automáticamente la pantalla que corresponde a tus permisos.</p>
+      <section id="login-section">
+        <p class="eyebrow">ACCESO SEGURO</p>
+        <h1>Iniciar sesión</h1>
+        <p class="muted">Ingresa tu cuenta. El sistema abrirá automáticamente la pantalla que corresponde a tus permisos.</p>
 
-      <form id="login-form">
-        <label for="email">Correo electrónico</label>
-        <input id="email" name="email" type="email" autocomplete="username" required>
+        <form id="login-form">
+          <label for="email">Correo electrónico</label>
+          <input id="email" name="email" type="email" autocomplete="username" required>
 
-        <label for="password">Contraseña</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <label for="password">Contraseña</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
 
-        <button id="login-button" type="submit">Ingresar</button>
-        <p id="login-message" class="login-message hidden" role="alert"></p>
-      </form>
+          <button id="login-button" type="submit">Ingresar</button>
+          <p id="login-message" class="login-message hidden" role="alert"></p>
+        </form>
+        <p class="auth-switch">¿Eres nuevo? <button id="show-register" class="text-button" type="button">Crear una cuenta</button></p>
+      </section>
+
+      <section id="register-section" class="hidden">
+        <p class="eyebrow">NUEVA CUENTA</p>
+        <h1>Crear cuenta</h1>
+        <p class="muted">Regístrate como usuario para solicitar y consultar tus turnos.</p>
+
+        <form id="register-form">
+          <label for="register-name">Nombre</label>
+          <input id="register-name" name="displayName" type="text" maxlength="80" autocomplete="name" required>
+
+          <label for="register-email">Correo electrónico</label>
+          <input id="register-email" name="email" type="email" autocomplete="email" required>
+
+          <label for="register-password">Contraseña</label>
+          <input id="register-password" name="password" type="password" minlength="8" autocomplete="new-password" required>
+
+          <button id="register-button" type="submit">Registrarme</button>
+          <p id="register-message" class="login-message hidden" role="alert"></p>
+        </form>
+        <p class="auth-switch">¿Ya tienes una cuenta? <button id="show-login" class="text-button" type="button">Iniciar sesión</button></p>
+      </section>
     </section>
   </main>
 
   <script>
-    const form = document.querySelector('#login-form');
-    const message = document.querySelector('#login-message');
-    const loginButton = document.querySelector('#login-button');
+    const loginSection = document.querySelector('#login-section');
+    const registerSection = document.querySelector('#register-section');
     const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+
+    document.querySelector('#show-register').addEventListener('click', () => {
+      loginSection.classList.add('hidden');
+      registerSection.classList.remove('hidden');
+    });
+
+    document.querySelector('#show-login').addEventListener('click', () => {
+      registerSection.classList.add('hidden');
+      loginSection.classList.remove('hidden');
+    });
 
     async function readJson(response) {
       const contentType = response.headers.get('content-type') || '';
@@ -43,8 +76,10 @@
       return response.json();
     }
 
-    form.addEventListener('submit', async (event) => {
+    document.querySelector('#login-form').addEventListener('submit', async (event) => {
       event.preventDefault();
+      const message = document.querySelector('#login-message');
+      const loginButton = document.querySelector('#login-button');
       message.classList.add('hidden');
       loginButton.disabled = true;
       loginButton.textContent = 'Verificando…';
@@ -71,6 +106,47 @@
       } finally {
         loginButton.disabled = false;
         loginButton.textContent = 'Ingresar';
+      }
+    });
+
+    document.querySelector('#register-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = document.querySelector('#register-message');
+      const registerButton = document.querySelector('#register-button');
+      message.classList.add('hidden');
+      registerButton.disabled = true;
+      registerButton.textContent = 'Creando cuenta…';
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/auth/register`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            displayName: document.querySelector('#register-name').value,
+            email: document.querySelector('#register-email').value,
+            password: document.querySelector('#register-password').value,
+          }),
+        });
+        const result = await readJson(response);
+        if (!response.ok) throw new Error(result.error || 'No se pudo crear la cuenta.');
+
+        document.querySelector('#email').value = result.email;
+        document.querySelector('#password').value = '';
+        document.querySelector('#register-form').reset();
+        registerSection.classList.add('hidden');
+        loginSection.classList.remove('hidden');
+        const loginMessage = document.querySelector('#login-message');
+        loginMessage.textContent = 'Cuenta creada correctamente. Ya puedes iniciar sesión.';
+        loginMessage.classList.remove('hidden');
+      } catch (error) {
+        message.textContent = error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y la configuración del backend.'
+          : error.message || 'No se pudo crear la cuenta.';
+        message.classList.remove('hidden');
+      } finally {
+        registerButton.disabled = false;
+        registerButton.textContent = 'Registrarme';
       }
     });
   </script>

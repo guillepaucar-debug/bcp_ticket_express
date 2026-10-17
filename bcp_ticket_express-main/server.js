@@ -22,11 +22,49 @@ const readAttentionType = (attentionType) =>
     ? attentionType.trim().toLowerCase()
     : null;
 const SESSION_MAX_AGE_MS = 8 * 60 * 60 * 1000;
-const sessions = new Map();
 const sessionCookieName = (role) => `bcp_${role}_session`;
 
 app.use(express.json({ limit: '1mb' }));
 if (isProduction) app.set('trust proxy', 1);
+
+const signSession = (payload) => crypto.createHmac('sha256', SECRET)
+  .update(`bcp-ticket-express:session:v1:${payload}`)
+  .digest('base64url');
+
+const createSessionToken = (session) => {
+  const payload = Buffer.from(JSON.stringify(session)).toString('base64url');
+  return `${payload}.${signSession(payload)}`;
+};
+
+const readSessionToken = (token) => {
+  if (typeof token !== 'string') return null;
+  const [payload, signature, extra] = token.split('.');
+  if (!payload || !signature || extra || !/^[A-Za-z0-9_-]+$/.test(payload) || !/^[A-Za-z0-9_-]+$/.test(signature)) {
+    return null;
+  }
+
+  const expectedSignature = Buffer.from(signSession(payload));
+  const receivedSignature = Buffer.from(signature);
+  if (expectedSignature.length !== receivedSignature.length
+    || !crypto.timingSafeEqual(expectedSignature, receivedSignature)) {
+    return null;
+  }
+
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!session
+      || typeof session.uid !== 'string'
+      || !['user', 'admin'].includes(session.role)
+      || typeof session.username !== 'string'
+      || !Number.isSafeInteger(session.expiresAt)
+      || session.expiresAt <= Date.now()) {
+      return null;
+    }
+    return session;
+  } catch {
+    return null;
+  }
+};
 
 const getFirebaseAuth = () => {
   const serviceAccountValue = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
@@ -190,16 +228,12 @@ app.use((req, res, next) => {
 const readSession = (req, role = null) => {
   const roles = role ? [role] : ['user', 'admin'];
   for (const sessionRole of roles) {
-    const cookie = req.headers.cookie?.match(
-      new RegExp(`(?:^|;\\s*)${sessionCookieName(sessionRole)}=([a-f0-9]+)`),
+    const token = req.headers.cookie?.match(
+      new RegExp(`(?:^|;\\s*)${sessionCookieName(sessionRole)}=([A-Za-z0-9_.-]+)`),
     )?.[1];
-    if (!cookie) continue;
-
-    const session = sessions.get(cookie);
-    if (!session || session.expiresAt <= Date.now()) {
-      sessions.delete(cookie);
-      continue;
-    }
+    if (!token) continue;
+    const session = readSessionToken(token);
+    if (!session || (role && session.role !== role)) continue;
     return session;
   }
   return null;
@@ -333,12 +367,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
     }
 
     const cookieName = sessionCookieName(role);
-    const previousSessionId = req.headers.cookie?.match(
-      new RegExp(`(?:^|;\\s*)${cookieName}=([a-f0-9]+)`),
-    )?.[1];
-    if (previousSessionId) sessions.delete(previousSessionId);
-    const sessionId = crypto.randomBytes(32).toString('hex');
-    sessions.set(sessionId, {
+    const sessionToken = createSessionToken({
       uid: decodedToken.uid,
       role,
       username: decodedToken.email || email,
@@ -346,7 +375,7 @@ app.post('/api/v1/auth/login', async (req, res) => {
     });
     res.setHeader(
       'Set-Cookie',
-      `${cookieName}=${sessionId}; Path=/; HttpOnly; SameSite=${isProduction ? 'None' : 'Lax'}; Max-Age=${SESSION_MAX_AGE_MS / 1000}${isProduction ? '; Secure' : ''}`,
+      `${cookieName}=${sessionToken}; Path=/; HttpOnly; SameSite=${isProduction ? 'None' : 'Lax'}; Max-Age=${SESSION_MAX_AGE_MS / 1000}${isProduction ? '; Secure' : ''}`,
     );
     res.json({ role, username: decodedToken.email || email });
   } catch (error) {
@@ -465,10 +494,6 @@ app.post('/api/v1/auth/logout', (req, res) => {
     return res.status(400).json({ error: 'Selecciona el acceso que quieres cerrar' });
   }
   const cookieName = sessionCookieName(role);
-  const sessionId = req.headers.cookie?.match(
-    new RegExp(`(?:^|;\\s*)${cookieName}=([a-f0-9]+)`),
-  )?.[1];
-  if (sessionId) sessions.delete(sessionId);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader(
     'Set-Cookie',

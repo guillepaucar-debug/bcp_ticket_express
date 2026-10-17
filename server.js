@@ -72,9 +72,11 @@ const createUserWithDni = async ({ email, password, displayName, dni }) => {
   const db = getFirestore(auth.app);
   const dniRef = db.collection('dni_registry').doc(dniHash);
   let newUser;
+  let profileRef;
 
   try {
     newUser = await auth.createUser({ email, password, displayName });
+    profileRef = db.collection('users').doc(newUser.uid);
     await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
     await db.runTransaction(async (transaction) => {
       const existingDni = await transaction.get(dniRef);
@@ -85,6 +87,13 @@ const createUserWithDni = async ({ email, password, displayName, dni }) => {
       }
       transaction.create(dniRef, {
         uid: newUser.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+      transaction.create(profileRef, {
+        uid: newUser.uid,
+        displayName: newUser.displayName,
+        email: newUser.email,
+        dni,
         createdAt: FieldValue.serverTimestamp(),
       });
     });
@@ -109,7 +118,9 @@ const createUserWithDni = async ({ email, password, displayName, dni }) => {
       try {
         await db.runTransaction(async (transaction) => {
           const registeredDni = await transaction.get(dniRef);
+          const registeredProfile = await transaction.get(profileRef);
           if (registeredDni.data()?.uid === newUser.uid) transaction.delete(dniRef);
+          if (registeredProfile.data()?.uid === newUser.uid) transaction.delete(profileRef);
         });
       } catch (cleanupError) {
         console.error('Could not release DNI reservation after account creation failed:', cleanupError.message);
@@ -257,6 +268,20 @@ app.post('/api/v1/auth/login', async (req, res) => {
     if (!['user', 'admin'].includes(role)) {
       return res.status(403).json({ error: 'La cuenta todavía no tiene un rol asignado. Contacta al administrador.' });
     }
+    if (role === 'user') {
+      const dni = typeof req.body?.dni === 'string' ? req.body.dni.trim() : '';
+      if (!/^\d{8}$/.test(dni)) {
+        return res.status(400).json({ error: 'Ingresa el DNI de 8 dígitos asociado a tu cuenta' });
+      }
+      const dniHash = getDniHash(dni);
+      const dniRecord = await getFirestore(getFirebaseAuth().app)
+        .collection('dni_registry')
+        .doc(dniHash)
+        .get();
+      if (dniRecord.data()?.uid !== decodedToken.uid) {
+        return res.status(401).json({ error: 'El DNI no coincide con el correo asociado a esta cuenta' });
+      }
+    }
     if (role === 'user' && !decodedToken.email_verified) {
       try {
         await sendVerificationEmail(authResult.idToken);
@@ -286,6 +311,9 @@ app.post('/api/v1/auth/login', async (req, res) => {
     res.json({ role, username: decodedToken.email || email });
   } catch (error) {
     console.error('Firebase login configuration or verification failed:', error.message);
+    if (/DNI_HASH_SECRET/.test(error.message)) {
+      return res.status(503).json({ error: 'No se puede validar el DNI. Configura DNI_HASH_SECRET en el servidor.' });
+    }
     res.status(503).json({ error: 'No se pudo conectar con Firebase. Revisa la configuración del backend.' });
   }
 });

@@ -725,10 +725,31 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
   const agencyId = readAgencyId(req.params.id);
   const ag = agencyId ? agencies[agencyId] : null;
   if (!ag) return res.status(404).json({ error: 'Agencia no encontrada' });
+  const limaDate = limaParts();
+  const appointmentDate = req.query.fecha == null
+    ? `${limaDate.year}-${limaDate.month}-${limaDate.day}`
+    : req.query.fecha;
+  const parsedAppointmentDate = new Date(`${appointmentDate}T00:00:00Z`);
+  if (typeof appointmentDate !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}$/.test(appointmentDate)
+    || Number.isNaN(parsedAppointmentDate.getTime())
+    || parsedAppointmentDate.toISOString().slice(0, 10) !== appointmentDate) {
+    return res.status(400).json({ error: 'Selecciona una fecha válida para consultar las citas' });
+  }
 
   const agencyTickets = [...tickets.values()]
     .filter((ticket) => ticket.agencia === ag.id)
     .sort((a, b) => b.numero - a.numero);
+  const appointments = agencyTickets
+    .filter((ticket) => ticket.fechaCita === appointmentDate)
+    .sort((a, b) => a.horaCita.localeCompare(b.horaCita) || a.numero - b.numero)
+    .map((ticket) => ({
+      id: ticket.id,
+      hora: ticket.horaCita,
+      nombre: ticket.persona.nombre,
+      tramite: ticket.tramite,
+      estado: ticket.estado,
+    }));
   const current = agencyTickets.find((ticket) => ticket.estado === 'ATENDIENDO') || null;
   const history = agencyTickets
     .filter((ticket) => ticket.estado === 'ATENDIDO')
@@ -742,6 +763,8 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
 
   res.json({
     agencia: { id: ag.id, nombre: ag.nombre, direccion: ag.direccion, horario: getAgencyHours(ag) },
+    fechaConsulta: appointmentDate,
+    citas: appointments,
     atendiendo: current ? {
       id: current.id,
       tramite: current.tramite,

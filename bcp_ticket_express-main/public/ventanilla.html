@@ -99,6 +99,35 @@
       </div>
     </section>
 
+    <section class="card history-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">CONSULTA DE CITAS</p>
+          <h2>Citas reservadas</h2>
+        </div>
+        <label class="appointment-date-control" for="appointments-date">Fecha
+          <input id="appointments-date" type="date">
+        </label>
+      </div>
+      <p class="muted">Incluye las citas reservadas aunque todavía no se haya registrado la llegada con el QR. Los turnos se guardan temporalmente y pueden desaparecer si el servidor se reinicia.</p>
+      <div class="history-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Turno</th>
+              <th scope="col">Hora</th>
+              <th scope="col">Persona</th>
+              <th scope="col">Trámite</th>
+              <th scope="col">Estado</th>
+            </tr>
+          </thead>
+          <tbody id="appointments-body">
+            <tr><td class="empty-history" colspan="5">Selecciona una fecha para consultar las citas.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="card user-management-card">
       <div class="section-heading">
         <div>
@@ -169,6 +198,19 @@
     let cameraActive = false;
     let validating = false;
     let lastValidatedPayload = '';
+
+    function limaDate() {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Lima',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date());
+      const values = Object.fromEntries(parts
+        .filter((part) => part.type !== 'literal')
+        .map(({ type, value }) => [type, value]));
+      return `${values.year}-${values.month}-${values.day}`;
+    }
 
     $('#logout').addEventListener('click', async () => {
       try {
@@ -282,6 +324,42 @@
       }
     }
 
+    function renderAppointments(appointments, date) {
+      const body = $('#appointments-body');
+      body.replaceChildren();
+
+      if (!appointments.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 5;
+        cell.className = 'empty-history';
+        cell.textContent = `No hay citas reservadas para ${date}.`;
+        return;
+      }
+
+      const statuses = {
+        ESPERANDO: 'Pendiente',
+        EN_SALA: 'En sala',
+        ATENDIENDO: 'En atención',
+        ATENDIDO: 'Atendido',
+      };
+      for (const appointment of appointments) {
+        const row = body.insertRow();
+        const numberCell = row.insertCell();
+        numberCell.className = 'history-ticket';
+        numberCell.textContent = appointment.id;
+        row.insertCell().textContent = appointment.hora;
+        row.insertCell().textContent = appointment.nombre;
+        row.insertCell().textContent = appointment.tramite;
+
+        const statusCell = row.insertCell();
+        const badge = document.createElement('span');
+        badge.className = 'history-badge';
+        badge.textContent = statuses[appointment.estado] || appointment.estado;
+        statusCell.append(badge);
+      }
+    }
+
     function renderBoard(board) {
       const attentionTypeLabel = board.tipoAtencion === 'plataforma' ? 'Plataforma' : 'Ventanilla';
       $('#agency-address').textContent = `${board.agencia.direccion} · Lunes a viernes ${board.agencia.horario.lunesViernes}, sábados ${board.agencia.horario.sabado}`;
@@ -298,6 +376,7 @@
       $('#queue-count').textContent = board.enCola;
       $('#served-count').textContent = board.totalAtendidos;
       renderHistory(board.historial);
+      renderAppointments(board.citas, board.fechaConsulta);
     }
 
     function showValidationResult(message, success) {
@@ -396,7 +475,10 @@
       if (!agencyId) return;
 
       try {
-        const query = new URLSearchParams({ tipoAtencion: attentionTypeSelect.value });
+        const query = new URLSearchParams({
+          tipoAtencion: attentionTypeSelect.value,
+          fecha: $('#appointments-date').value,
+        });
         const response = await fetch(`${api}/agencies/${encodeURIComponent(agencyId)}/board?${query}`, {
           credentials: 'include',
         });
@@ -439,6 +521,7 @@
 
     agencySelect.addEventListener('change', loadBoard);
     attentionTypeSelect.addEventListener('change', loadBoard);
+    $('#appointments-date').addEventListener('change', loadBoard);
     $('#camera-button').addEventListener('click', toggleCamera);
     $('#validate-button').addEventListener('click', () => validateTicket($('#qr-payload').value));
     $('#qr-payload').addEventListener('input', () => {
@@ -485,6 +568,7 @@
         if (!response.ok) throw new Error('No se pudo verificar la sesión de administrador.');
 
         $('main').classList.remove('hidden');
+        $('#appointments-date').value = limaDate();
         await loadAgencies();
       } catch (error) {
         $('main').classList.remove('hidden');

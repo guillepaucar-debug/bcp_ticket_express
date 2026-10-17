@@ -652,6 +652,19 @@ summary {
   overflow-x: auto;
 }
 
+.appointment-date-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.appointment-date-control input {
+  width: auto;
+  min-width: 145px;
+  padding: 8px 10px;
+}
+
 .history-card table {
   width: 100%;
   border-collapse: collapse;

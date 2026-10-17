@@ -769,7 +769,10 @@ app.post('/api/v1/tickets', requireApiRole('user'), async (req, res) => {
     && ticket.estado !== 'ATENDIDO'
     && (ticket.estado !== 'ESPERANDO' || ticket.citaAt + 30 * 60 * 1000 > Date.now()));
   if (duplicateActiveTicket) {
-    return res.status(409).json({ error: 'Este DNI ya tiene un turno activo en esta agencia' });
+    return res.status(409).json({
+      code: 'ACTIVE_TICKET_EXISTS',
+      error: 'Este DNI ya tiene un turno activo en esta agencia',
+    });
   }
 
   try {

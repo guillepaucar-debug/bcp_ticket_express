@@ -59,6 +59,7 @@
       </select>
       <p id="cita-ayuda" class="muted" role="status">Una cita por tipo de atención cada 30 minutos. Reserva hasta con 14 días de anticipación.</p>
       <button id="pedir">Reservar cita y generar QR</button>
+      <p id="booking-message" class="login-message hidden" role="alert"></p>
     </section>
 
     <section id="paso2" class="card ticket hidden">
@@ -381,6 +382,7 @@
 
       $('#pedir').disabled = true;
       $('#pedir').textContent = 'Reservando cita…';
+      $('#booking-message').classList.add('hidden');
       resetearNotificacion();
 
       try {
@@ -402,7 +404,9 @@
         const payload = await leerRespuesta(respuesta);
 
         if (!respuesta.ok) {
-          throw new Error(payload.error || 'No se pudo generar el turno.');
+          const error = new Error(payload.error || 'No se pudo generar el turno.');
+          error.code = payload.code;
+          throw error;
         }
 
         const ticket = payload;
@@ -456,9 +460,12 @@
       } catch (error) {
         console.error(error);
         $('#paso1').scrollIntoView({ behavior: 'smooth', block: 'start' });
-        mostrarError(error instanceof TypeError
-          ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
-          : error.message || 'No se pudo generar el turno.');
+        $('#booking-message').textContent = error.code === 'ACTIVE_TICKET_EXISTS'
+          ? 'No se registró otra cita: este DNI ya tiene un turno activo en esta agencia. Usa el QR de la cita que ya reservaste o elige otra agencia para solicitar un nuevo turno.'
+          : error instanceof TypeError
+            ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
+            : error.message || 'No se pudo generar el turno.';
+        $('#booking-message').classList.remove('hidden');
       } finally {
         $('#pedir').disabled = false;
         $('#pedir').textContent = 'Reservar cita y generar QR';

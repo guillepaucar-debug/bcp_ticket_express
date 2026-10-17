@@ -460,7 +460,7 @@ const agencies = {
     direccion: 'Av. Paseo de la República 4870, Miraflores',
     lat: -12.1211,
     lng: -77.0297,
-    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '23:30' } },
     last: 0,
   },
   '0102': {
@@ -469,7 +469,7 @@ const agencies = {
     direccion: 'Esquina de la Av. R. Rivera Navarrete con la Av. Juan de Arona, San Isidro',
     lat: -12.0977,
     lng: -77.0365,
-    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '23:30' } },
     last: 0,
   },
   '0103': {
@@ -478,7 +478,7 @@ const agencies = {
     direccion: 'Jirón Carabaya 103-14 / Calle Coca N° 451-459, Cercado de Lima',
     lat: -12.0464,
     lng: -77.0306,
-    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '23:30' } },
     last: 0,
   },
   '0104': {
@@ -487,7 +487,7 @@ const agencies = {
     direccion: 'Calle Monte Grande 149, Santiago de Surco',
     lat: -12.1398,
     lng: -76.9994,
-    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '23:30' } },
     last: 0,
   },
   '0105': {
@@ -496,7 +496,7 @@ const agencies = {
     direccion: 'Av. Elmer Faucett 435, Callao',
     lat: -12.0561,
     lng: -77.1175,
-    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '23:30' } },
     last: 0,
   },
 };

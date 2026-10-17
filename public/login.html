@@ -148,7 +148,9 @@
         registerSection.classList.add('hidden');
         loginSection.classList.remove('hidden');
         const loginMessage = document.querySelector('#login-message');
-        loginMessage.textContent = 'Cuenta creada. Revisa tu correo y confirma el enlace de verificación antes de iniciar sesión.';
+        loginMessage.textContent = result.verificationEmailSent
+          ? 'Cuenta guardada en Firebase. Revisa tu correo y confirma el enlace antes de iniciar sesión.'
+          : 'Cuenta guardada en Firebase, pero no se pudo enviar el correo. Intenta ingresar para reenviar el enlace de verificación.';
         loginMessage.classList.remove('hidden');
       } catch (error) {
         message.textContent = error instanceof TypeError

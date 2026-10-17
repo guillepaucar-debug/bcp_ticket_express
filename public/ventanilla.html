@@ -203,7 +203,9 @@
         const createdUser = await readJson(response);
         if (!response.ok) throw new Error(createdUser.error || 'No se pudo crear el usuario.');
 
-        result.textContent = `Cuenta creada para ${createdUser.displayName} (${createdUser.email}). Se envió un enlace de verificación; deberá confirmar su correo antes de iniciar sesión.`;
+        result.textContent = createdUser.verificationEmailSent
+          ? `Cuenta guardada para ${createdUser.displayName} (${createdUser.email}). Se envió un enlace de verificación que deberá confirmar antes de iniciar sesión.`
+          : `Cuenta guardada para ${createdUser.displayName} (${createdUser.email}), pero no se pudo enviar el enlace. Puede intentar ingresar para solicitar otro.`;
         result.classList.remove('validation-error');
         result.classList.add('validation-success');
         result.classList.remove('hidden');

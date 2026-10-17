@@ -100,22 +100,6 @@ const createUserWithDni = async ({ email, password, displayName, dni }) => {
         createdAt: FieldValue.serverTimestamp(),
       });
     });
-
-    const signInResponse = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, returnSecureToken: true }),
-      },
-    );
-    const signInResult = await signInResponse.json();
-    if (!signInResponse.ok || typeof signInResult.idToken !== 'string') {
-      console.error('Firebase verification sign-in failed:', signInResult.error?.message || signInResponse.status);
-      throw new Error('No se pudo iniciar el proceso de verificación del correo');
-    }
-    await sendVerificationEmail(signInResult.idToken, apiKey);
-    return newUser;
   } catch (error) {
     if (newUser) {
       try {
@@ -128,16 +112,39 @@ const createUserWithDni = async ({ email, password, displayName, dni }) => {
       } catch (cleanupError) {
         console.error('Could not release DNI reservation after account creation failed:', cleanupError.message);
       }
-    }
-    if (newUser) {
       try {
         await auth.deleteUser(newUser.uid);
       } catch (cleanupError) {
         console.error('Could not delete incomplete Firebase account:', cleanupError.message);
       }
     }
+    if (newUser && error.code !== 'app/dni-already-registered') {
+      console.error('Could not save user profile in Firestore:', error.message);
+      error.code = 'app/profile-save-failed';
+    }
     throw error;
   }
+
+  let verificationEmailSent = true;
+  try {
+    const signInResponse = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const signInResult = await signInResponse.json();
+    if (!signInResponse.ok || typeof signInResult.idToken !== 'string') {
+      throw new Error(signInResult.error?.message || `HTTP ${signInResponse.status}`);
+    }
+    await sendVerificationEmail(signInResult.idToken, apiKey);
+  } catch (error) {
+    verificationEmailSent = false;
+    console.error(`User profile saved, but verification email was not sent for uid ${newUser.uid}:`, error.message);
+  }
+  return { user: newUser, verificationEmailSent };
 };
 
 const stripSlash = (url) => url.trim().replace(/\/+$/, '');
@@ -341,8 +348,13 @@ app.post('/api/v1/auth/register', async (req, res) => {
   }
 
   try {
-    const newUser = await createUserWithDni({ email, password, displayName, dni });
-    res.status(201).json({ email: newUser.email, displayName: newUser.displayName, role: 'user' });
+    const { user, verificationEmailSent } = await createUserWithDni({ email, password, displayName, dni });
+    res.status(201).json({
+      email: user.email,
+      displayName: user.displayName,
+      role: 'user',
+      verificationEmailSent,
+    });
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
@@ -350,13 +362,12 @@ app.post('/api/v1/auth/register', async (req, res) => {
     if (error.code === 'app/dni-already-registered') {
       return res.status(409).json({ error: error.message });
     }
+    if (error.code === 'app/profile-save-failed') {
+      return res.status(503).json({ error: 'No se pudo guardar el perfil en Firestore. Revisa que Firestore esté habilitado y que las credenciales del servidor pertenezcan al proyecto correcto.' });
+    }
     console.error('Firebase self-registration failed:', error.message);
     if (/clave para proteger el DNI/i.test(error.message)) {
       return res.status(503).json({ error: 'El registro no está disponible. Revisa la clave para proteger el DNI en el servidor.' });
-    }
-    if (error.message === 'No se pudo enviar el correo de verificación'
-      || error.message === 'No se pudo iniciar el proceso de verificación del correo') {
-      return res.status(502).json({ error: 'No se pudo enviar el correo de verificación. No se creó la cuenta; inténtalo de nuevo.' });
     }
     res.status(502).json({ error: 'No se pudo completar el registro. Revisa la configuración de Firebase Authentication y Cloud Firestore.' });
   }
@@ -382,8 +393,14 @@ app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
   }
 
   try {
-    const newUser = await createUserWithDni({ email, password, displayName, dni });
-    res.status(201).json({ uid: newUser.uid, email: newUser.email, displayName: newUser.displayName, role: 'user' });
+    const { user, verificationEmailSent } = await createUserWithDni({ email, password, displayName, dni });
+    res.status(201).json({
+      uid: user.uid,
+      email: user.email,
+      displayName: user.displayName,
+      role: 'user',
+      verificationEmailSent,
+    });
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
@@ -391,13 +408,12 @@ app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
     if (error.code === 'app/dni-already-registered') {
       return res.status(409).json({ error: error.message });
     }
+    if (error.code === 'app/profile-save-failed') {
+      return res.status(503).json({ error: 'No se pudo guardar el perfil en Firestore. Revisa que Firestore esté habilitado y que las credenciales del servidor pertenezcan al proyecto correcto.' });
+    }
     console.error('Firebase user creation failed:', error.message);
     if (/clave para proteger el DNI/i.test(error.message)) {
       return res.status(503).json({ error: 'El registro no está disponible. Revisa la clave para proteger el DNI en el servidor.' });
-    }
-    if (error.message === 'No se pudo enviar el correo de verificación'
-      || error.message === 'No se pudo iniciar el proceso de verificación del correo') {
-      return res.status(502).json({ error: 'No se pudo enviar el correo de verificación. No se creó la cuenta; inténtalo de nuevo.' });
     }
     res.status(502).json({ error: 'No se pudo completar el registro. Revisa la configuración de Firebase Authentication y Cloud Firestore.' });
   }

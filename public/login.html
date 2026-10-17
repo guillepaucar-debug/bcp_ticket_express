@@ -29,7 +29,7 @@
         <h1>Iniciar sesión</h1>
         <p class="muted">Ingresa tu cuenta. El sistema abrirá automáticamente la pantalla que corresponde a tus permisos.</p>
 
-        <form id="login-form">
+        <form id="login-form" method="post">
           <label for="email">Correo electrónico</label>
           <input id="email" name="email" type="email" autocomplete="username" required>
 
@@ -53,7 +53,7 @@
         <h1>Crear cuenta</h1>
         <p class="muted">Regístrate con tu DNI. Enviaremos un enlace de verificación al correo; deberás confirmarlo antes de iniciar sesión.</p>
 
-        <form id="register-form">
+        <form id="register-form" method="post">
           <label for="register-name">Nombre</label>
           <input id="register-name" name="displayName" type="text" maxlength="80" autocomplete="name" required>
 

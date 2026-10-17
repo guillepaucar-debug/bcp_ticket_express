@@ -781,6 +781,15 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
       estado: ticket.estado,
       tipoAtencion: ticket.tipoAtencion,
     }));
+  const waitingAppointments = arrivedAppointments(ag.id, attentionType);
+  const queue = waitingAppointments.map((ticket) => ({
+    id: ticket.id,
+    fecha: ticket.fechaCita,
+    hora: ticket.horaCita,
+    nombre: ticket.persona.nombre,
+    tramite: ticket.tramite,
+    listoParaLlamar: ticket.citaAt <= Date.now(),
+  }));
   const current = agencyTickets.find((ticket) => ticket.estado === 'ATENDIENDO') || null;
   const history = agencyTickets
     .filter((ticket) => ticket.estado === 'ATENDIDO')
@@ -797,6 +806,7 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
     tipoAtencion: attentionType,
     fechaConsulta: appointmentDate,
     citas: appointments,
+    cola: queue,
     atendiendo: current ? {
       id: current.id,
       tramite: current.tramite,
@@ -805,7 +815,8 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
       cita: { fecha: current.fechaCita, hora: current.horaCita },
       persona: current.persona.nombre,
     } : null,
-    enCola: arrivedAppointments(ag.id, attentionType).filter((ticket) => ticket.citaAt <= Date.now()).length,
+    enCola: queue.length,
+    listasParaLlamar: queue.filter((ticket) => ticket.listoParaLlamar).length,
     totalAtendidos: agencyTickets.filter((ticket) => ticket.estado === 'ATENDIDO').length,
     historial: history,
   });
@@ -971,6 +982,16 @@ app.post('/api/v1/agencies/:id/next', requireApiRole('admin'), (req, res) => {
   const now = Date.now();
   const nextTicket = arrivedAppointments(ag.id, attentionType).find((ticket) => ticket.citaAt <= now);
   if (!nextTicket) {
+    if (previousTicket) {
+      return res.json({
+        agencia: ag.id,
+        tipoAtencion: attentionType,
+        finalizado: true,
+        turnoAtendido: previousTicket.id,
+        enCola: arrivedAppointments(ag.id, attentionType).length,
+        listasParaLlamar: 0,
+      });
+    }
     return res.status(409).json({ error: 'No hay citas pendientes listas para llamar. Registra la llegada y espera la hora reservada.' });
   }
 
@@ -997,7 +1018,8 @@ app.post('/api/v1/agencies/:id/next', requireApiRole('admin'), (req, res) => {
     tipoAtencion: attentionType,
     turno: nextTicket.id,
     atendiendo: nextTicket.numero,
-    enCola: arrivedAppointments(ag.id, attentionType).filter((ticket) => ticket.citaAt <= Date.now()).length,
+    enCola: arrivedAppointments(ag.id, attentionType).length,
+    listasParaLlamar: arrivedAppointments(ag.id, attentionType).filter((ticket) => ticket.citaAt <= Date.now()).length,
   });
 });
 

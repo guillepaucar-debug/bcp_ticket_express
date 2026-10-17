@@ -60,9 +60,9 @@
       <div class="counter-stats">
         <article class="stat-card">
           <span class="stat-icon" aria-hidden="true">↗</span>
-          <span class="detail-label">En cola</span>
+          <span class="detail-label">En sala / cola</span>
           <strong id="queue-count">0</strong>
-          <span class="stat-caption">citas pendientes para llamar</span>
+          <span id="queue-caption" class="stat-caption">personas registradas con QR</span>
         </article>
         <article class="stat-card">
           <span class="stat-icon stat-icon-orange" aria-hidden="true">✓</span>
@@ -70,6 +70,32 @@
           <strong id="served-count">0</strong>
           <span class="stat-caption">en esta agencia</span>
         </article>
+      </div>
+    </section>
+
+    <section class="card queue-card">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">TURNOS PRESENTES</p>
+          <h2>En sala y esperando llamada</h2>
+        </div>
+        <span id="queue-ready-count" class="history-count">0 listos para llamar</span>
+      </div>
+      <div class="history-table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Turno</th>
+              <th scope="col">Cita</th>
+              <th scope="col">Persona</th>
+              <th scope="col">Trámite</th>
+              <th scope="col">Estado de llamada</th>
+            </tr>
+          </thead>
+          <tbody id="queue-body">
+            <tr><td class="empty-history" colspan="5">Todavía no hay llegadas registradas con QR.</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -332,7 +358,7 @@
       }
 
       const statuses = {
-        ESPERANDO: 'Pendiente',
+        ESPERANDO: 'Reservada · sin llegada',
         EN_SALA: 'En sala',
         ATENDIENDO: 'En atención',
         ATENDIDO: 'Atendido',
@@ -354,6 +380,38 @@
       }
     }
 
+    function renderQueue(queue, readyCount) {
+      const body = $('#queue-body');
+      body.replaceChildren();
+      $('#queue-ready-count').textContent = `${readyCount} listos para llamar`;
+      $('#queue-caption').textContent = `${queue.length} personas en sala · ${readyCount} listas para llamar`;
+
+      if (!queue.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 5;
+        cell.className = 'empty-history';
+        cell.textContent = 'Todavía no hay llegadas registradas con QR.';
+        return;
+      }
+
+      for (const ticket of queue) {
+        const row = body.insertRow();
+        const numberCell = row.insertCell();
+        numberCell.className = 'history-ticket';
+        numberCell.textContent = ticket.id;
+        row.insertCell().textContent = `${ticket.fecha} · ${ticket.hora}`;
+        row.insertCell().textContent = ticket.nombre;
+        row.insertCell().textContent = ticket.tramite;
+
+        const statusCell = row.insertCell();
+        const badge = document.createElement('span');
+        badge.className = `history-badge${ticket.listoParaLlamar ? '' : ' queue-badge-waiting'}`;
+        badge.textContent = ticket.listoParaLlamar ? 'Lista para llamar' : `Espera su hora (${ticket.hora})`;
+        statusCell.append(badge);
+      }
+    }
+
     function renderBoard(board) {
       $('#agency-address').textContent = `${board.agencia.direccion} · Lunes a viernes ${board.agencia.horario.lunesViernes}, sábados ${board.agencia.horario.sabado}`;
       $('#current-number').textContent = board.atendiendo?.id || '—';
@@ -367,6 +425,7 @@
         : '';
       $('#current-time').textContent = formatTime(board.atendiendo?.llamado);
       $('#queue-count').textContent = board.enCola;
+      renderQueue(board.cola, board.listasParaLlamar);
       $('#served-count').textContent = board.totalAtendidos;
       renderHistory(board.historial);
       renderAppointments(board.citas, board.fechaConsulta);
@@ -526,7 +585,9 @@
         const result = await readJson(response);
         if (!response.ok) throw new Error(result.error || 'No se pudo llamar a la siguiente cita.');
         await loadBoard();
-        showNotice(`Cita ${result.turno} llamada correctamente.`);
+        showNotice(result.finalizado
+          ? `Ticket ${result.turnoAtendido} atendido y cerrado automáticamente.`
+          : `Cita ${result.turno} llamada correctamente.`);
       } catch (error) {
         showNotice(error.message || 'No se pudo llamar a la siguiente cita.', true);
         await loadBoard();

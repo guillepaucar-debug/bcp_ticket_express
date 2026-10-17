@@ -652,6 +652,15 @@ summary {
   overflow-x: auto;
 }
 
+.queue-card {
+  margin-bottom: 14px;
+}
+
+.queue-badge-waiting {
+  background: #fff1e6;
+  color: #9a4b00;
+}
+
 .appointment-date-control {
   display: flex;
   align-items: center;

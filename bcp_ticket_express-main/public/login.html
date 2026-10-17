@@ -4,6 +4,19 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Acceso · BCP Ticket Express</title>
+  <script>
+    const loginUrl = new URL(window.location.href);
+    let removedCredentials = false;
+    for (const key of [...loginUrl.searchParams.keys()]) {
+      if (['email', 'dni', 'password', 'token', 'idtoken', 'access_token', 'refresh_token'].includes(key.toLowerCase())) {
+        loginUrl.searchParams.delete(key);
+        removedCredentials = true;
+      }
+    }
+    if (removedCredentials) {
+      window.history.replaceState(null, '', `${loginUrl.pathname}${loginUrl.search}${loginUrl.hash}`);
+    }
+  </script>
   <link rel="stylesheet" href="style.css">
   <script src="config.js"></script>
 </head>

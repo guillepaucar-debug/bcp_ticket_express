@@ -286,14 +286,39 @@ app.post('/api/v1/auth/login', async (req, res) => {
     if (role === 'user') {
       const dni = typeof req.body?.dni === 'string' ? req.body.dni.trim() : '';
       if (!/^\d{8}$/.test(dni)) {
-        return res.status(400).json({ error: 'Ingresa el DNI de 8 dígitos asociado a tu cuenta' });
+        return res.status(400).json({ error: 'Ingresa los 8 dígitos del DNI asociado a tu cuenta, incluido el cero inicial si lo tiene' });
       }
+      const auth = getFirebaseAuth();
+      const db = getFirestore(auth.app);
       const dniHash = getDniHash(dni);
-      const dniRecord = await getFirestore(getFirebaseAuth().app)
-        .collection('dni_registry')
-        .doc(dniHash)
-        .get();
-      if (dniRecord.data()?.uid !== decodedToken.uid) {
+      const dniRef = db.collection('dni_registry').doc(dniHash);
+      const profileRef = db.collection('users').doc(decodedToken.uid);
+      const [dniRecord, profile] = await Promise.all([dniRef.get(), profileRef.get()]);
+      let dniMatches = dniRecord.data()?.uid === decodedToken.uid;
+
+      if (!dniMatches && profile.data()?.dni === dni) {
+        await db.runTransaction(async (transaction) => {
+          const [registeredDni, registeredProfile] = await Promise.all([
+            transaction.get(dniRef),
+            transaction.get(profileRef),
+          ]);
+          if (registeredDni.exists) {
+            dniMatches = registeredDni.data()?.uid === decodedToken.uid;
+            return;
+          }
+          if (registeredProfile.data()?.dni !== dni) {
+            dniMatches = false;
+            return;
+          }
+          transaction.create(dniRef, {
+            uid: decodedToken.uid,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+          dniMatches = true;
+        });
+      }
+
+      if (!dniMatches) {
         return res.status(401).json({ error: 'El DNI no coincide con el correo asociado a esta cuenta' });
       }
     }

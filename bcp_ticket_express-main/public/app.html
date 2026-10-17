@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BCP Ticket Express · App Banca Móvil</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js"></script>
+</head>
+<body>
+  <header class="user-header">
+    <span>BCP Ticket Express</span>
+    <div class="header-actions">
+      <a class="header-link" href="/ventanilla.html" target="_blank" rel="noopener">Abrir administrador ↗</a>
+      <button id="logout" class="logout-button" type="button">Cerrar sesión</button>
+    </div>
+  </header>
+  <main class="hidden">
+    <div id="push" class="push hidden"></div>
+
+    <section id="paso1" class="card">
+      <h2>Elige tu sede</h2>
+      <div id="lista">Buscando agencias cercanas…</div>
+      <label for="personaNombre">Nombre de la persona</label>
+      <input id="personaNombre" name="personaNombre" autocomplete="name" minlength="2" maxlength="100" required>
+      <label for="personaDni">DNI de la persona</label>
+      <input id="personaDni" name="personaDni" type="text" inputmode="numeric" autocomplete="off"
+        minlength="8" maxlength="8" pattern="[0-9]{8}" required>
+      <p class="muted">Cada cita genera un QR individual. El DNI no se incluye en el QR y se muestra parcialmente oculto.</p>
+      <label for="ag">Sede</label>
+      <select id="ag"></select>
+      <p id="horario-agencia" class="muted"></p>
+      <label for="tr">¿Qué necesitas hacer?</label>
+      <select id="tr" required>
+        <option value="" selected disabled>Selecciona una operación</option>
+        <option value="Transferir dinero">Transferir dinero desde la app</option>
+        <option value="Pagar servicios y tarjetas">Pagar servicios o tarjetas desde la app</option>
+        <option value="Recargar celular">Recargar celular desde la app</option>
+        <option value="Consultar saldo y movimientos">Consultar saldo y movimientos desde la app</option>
+        <option value="Entrega de tarjeta física">Entrega de tarjeta física en máquina de autoservicio</option>
+        <option value="Caja / Depósitos">Caja / Depósitos</option>
+        <option value="Atención al cliente">Atención al cliente</option>
+        <option value="Créditos">Créditos</option>
+        <option value="Apertura de cuenta">Apertura de cuenta</option>
+      </select>
+      <section id="guia-operacion" class="operation-guide hidden" aria-live="polite"></section>
+      <label for="tipo-atencion">Tipo de atención presencial</label>
+      <select id="tipo-atencion" required>
+        <option value="" selected disabled>Selecciona Plataforma o Ventanilla</option>
+        <option value="plataforma">Plataforma</option>
+        <option value="ventanilla">Ventanilla</option>
+      </select>
+      <p class="muted">Cada tipo de atención tiene sus propios cupos disponibles y su propia fila.</p>
+      <label for="fecha-cita">Fecha de la cita</label>
+      <input id="fecha-cita" type="date" required>
+      <label for="hora-cita">Hora disponible</label>
+      <select id="hora-cita" required>
+        <option value="">Selecciona una sede, tipo de atención y fecha</option>
+      </select>
+      <p id="cita-ayuda" class="muted" role="status">Una cita por tipo de atención cada 30 minutos. Reserva hasta con 14 días de anticipación.</p>
+      <button id="pedir">Reservar cita y generar QR</button>
+    </section>
+
+    <section id="paso2" class="card ticket hidden">
+      <h2>Tu turno</h2>
+      <p class="num" id="tid"></p>
+      <p id="persona"></p>
+      <p id="detalle-cita"></p>
+      <p><span id="estado" class="estado"></span></p>
+      <p id="previos"></p>
+      <img id="qr" alt="Código QR de tu turno" width="240" height="240">
+      <p style="font-size:13px">Muestra este código QR al llegar a la sede para confirmar tu asistencia a la cita.</p>
+    </section>
+  </main>
+
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+    const api = `${apiBaseUrl}/api/v1`;
+    let eventSource = null;
+    let availabilityRequest = 0;
+    const guiasOperacion = {
+      'Transferir dinero': {
+        titulo: 'Guía rápida: transferir dinero',
+        introduccion: 'Puedes intentar hacer la transferencia desde la app BCP:',
+        pasos: [
+          'Ingresa a la app BCP oficial e inicia sesión.',
+          'Abre Transferencias y elige la cuenta de origen y el destinatario.',
+          'Ingresa el monto, revisa cuidadosamente los datos y confirma en la app.',
+          'Guarda o consulta el comprobante en tus movimientos.',
+        ],
+        nota: 'Los nombres de los menús pueden variar. No compartas tu clave ni códigos de verificación.',
+      },
+      'Pagar servicios y tarjetas': {
+        titulo: 'Guía rápida: pagar servicios o tarjetas',
+        introduccion: 'Revisa en la app BCP si puedes completar el pago:',
+        pasos: [
+          'Ingresa a la app BCP oficial e inicia sesión.',
+          'Abre la opción de pagos y selecciona el servicio o tarjeta.',
+          'Ingresa el código o número solicitado y el monto, si corresponde.',
+          'Verifica el destinatario y el importe antes de confirmar; luego revisa el comprobante.',
+        ],
+        nota: 'La disponibilidad depende del servicio y de las opciones habilitadas en tu app. Nunca compartas claves ni códigos.',
+      },
+      'Recargar celular': {
+        titulo: 'Guía rápida: recargar un celular',
+        introduccion: 'Si la recarga está habilitada para tu cuenta, puedes hacerla desde la app:',
+        pasos: [
+          'Ingresa a la app BCP oficial e inicia sesión.',
+          'Busca Recargas y elige el operador.',
+          'Ingresa el número y el importe; verifica que el número sea correcto.',
+          'Confirma la operación y revisa el comprobante.',
+        ],
+        nota: 'Las opciones disponibles pueden variar según tu cuenta y la versión de la app.',
+      },
+      'Consultar saldo y movimientos': {
+        titulo: 'Guía rápida: consultar saldo y movimientos',
+        introduccion: 'La app puede permitirte consultar la información de tus cuentas:',
+        pasos: [
+          'Ingresa a la app BCP oficial e inicia sesión.',
+          'Abre Cuentas y selecciona la cuenta que deseas revisar.',
+          'Consulta el saldo o entra a movimientos para ver operaciones recientes.',
+        ],
+        nota: 'No compartas capturas que muestren información financiera o datos personales.',
+      },
+      'Entrega de tarjeta física': {
+        titulo: 'Opción de autoservicio: tarjeta física',
+        introduccion: 'Algunas sedes cuentan con máquinas para gestionar o entregar tarjetas físicas:',
+        pasos: [
+          'Consulta con el personal si la sede tiene disponible la máquina y si tu solicitud puede atenderse allí.',
+          'Sigue únicamente las instrucciones que aparezcan en la máquina oficial y completa las verificaciones que solicite.',
+          'Retira la tarjeta y cualquier comprobante cuando la máquina indique que el proceso terminó.',
+        ],
+        nota: 'La disponibilidad, los requisitos y el proceso dependen de cada sede. Si necesitas ayuda, puedes continuar y reservar una cita presencial.',
+      },
+    };
+
+    function mostrarGuiaOperacion() {
+      const guia = guiasOperacion[$('#tr').value];
+      const contenedor = $('#guia-operacion');
+      contenedor.replaceChildren();
+      if (!guia) {
+        contenedor.classList.add('hidden');
+        return;
+      }
+
+      const titulo = document.createElement('h3');
+      titulo.textContent = guia.titulo;
+      const introduccion = document.createElement('p');
+      introduccion.textContent = guia.introduccion;
+      const pasos = document.createElement('ol');
+      for (const paso of guia.pasos) {
+        const item = document.createElement('li');
+        item.textContent = paso;
+        pasos.append(item);
+      }
+      const nota = document.createElement('p');
+      nota.className = 'muted';
+      nota.textContent = guia.nota;
+      contenedor.append(titulo, introduccion, pasos, nota);
+      contenedor.classList.remove('hidden');
+    }
+
+    $('#logout').addEventListener('click', async () => {
+      try {
+        const response = await fetch(`${api}/auth/logout`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ role: 'user' }),
+        });
+        if (!response.ok) throw new Error('No se pudo cerrar la sesión.');
+        eventSource?.close();
+        window.location.assign('/login.html?role=user');
+      } catch (error) {
+        window.alert(error.message || 'No se pudo cerrar la sesión.');
+      }
+    });
+
+    const etiquetas = {
+      ESPERANDO: 'En espera',
+      EN_SALA: 'En sala',
+      ATENDIENDO: 'Te están atendiendo',
+      ATENDIDO: 'Atendido'
+    };
+
+    function mostrarError(mensaje) {
+      $('#lista').textContent = mensaje;
+      $('#pedir').disabled = true;
+      $('#pedir').textContent = 'No disponible';
+    }
+
+    async function leerRespuesta(respuesta) {
+      const tipo = respuesta.headers.get('content-type') || '';
+      if (!tipo.includes('application/json')) {
+        await respuesta.text();
+        throw new Error(`La API devolvió una respuesta inesperada (HTTP ${respuesta.status}). Revisa la URL del backend en config.js.`);
+      }
+      return respuesta.json();
+    }
+
+    function resetearNotificacion() {
+      $('#push').textContent = '';
+      $('#push').classList.add('hidden');
+    }
+
+    function pintar(t) {
+      const ticket = t || {};
+      const estado = ticket.estado || 'ESPERANDO';
+      const turnosPrevios = Number(ticket.turnosPrevios ?? 0);
+
+      $('#estado').textContent = etiquetas[estado] || estado;
+      $('#estado').className = `estado ${estado}`;
+      $('#previos').textContent = ['ESPERANDO', 'EN_SALA'].includes(estado)
+        ? `Citas registradas antes que tú: ${turnosPrevios}`
+        : '';
+    }
+
+    function actualizarListaAgencias(data) {
+      const agencias = Array.isArray(data) ? data : [];
+
+      if (!agencias.length) {
+        mostrarError('No se encontraron agencias disponibles en este momento.');
+        return;
+      }
+
+      $('#lista').innerHTML = agencias.map(a => {
+        const distancia = a.distanciaKm != null ? ` · ${a.distanciaKm} km` : '';
+        const direccion = a.direccion ? `<small>${a.direccion}</small>` : '';
+        return `
+          <div class="agencia">
+            <span>${a.nombre}${distancia}</span>
+            <span>Plataforma: ${a.colas.plataforma.enCola} en espera · Ventanilla: ${a.colas.ventanilla.enCola} en espera</span>
+            <small>Atención: lun–vie ${a.horario.lunesViernes} · sáb ${a.horario.sabado}</small>
+            ${direccion}
+          </div>
+        `;
+      }).join('');
+
+      $('#ag').innerHTML = agencias.map(a => `<option value="${a.id}">${a.nombre}</option>`).join('');
+      $('#ag').onchange = cargarHorarios;
+      cargarHorarios();
+      $('#pedir').disabled = false;
+      $('#pedir').textContent = 'Reservar cita y generar QR';
+    }
+
+    function fechaLima(offsetDays = 0) {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Lima',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date());
+      const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map(({ type, value }) => [type, value]));
+      const date = new Date(`${values.year}-${values.month}-${values.day}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    }
+
+    async function cargarHorarios() {
+      const fecha = $('#fecha-cita').value;
+      const agenciaId = $('#ag').value;
+      const horario = $('#horario-agencia');
+      const horas = $('#hora-cita');
+      const ayuda = $('#cita-ayuda');
+      const tipoAtencion = $('#tipo-atencion').value;
+      if (!agenciaId || !fecha || !tipoAtencion) return;
+
+      const requestId = ++availabilityRequest;
+      horas.replaceChildren(new Option('Buscando horarios disponibles…', ''));
+      horas.disabled = true;
+      try {
+        const query = new URLSearchParams({
+          agencyId: agenciaId,
+          date: fecha,
+          tipoAtencion,
+        });
+        const response = await fetch(`${api}/appointments/slots?${query}`, { credentials: 'include' });
+        const result = await leerRespuesta(response);
+        if (requestId !== availabilityRequest || agenciaId !== $('#ag').value || fecha !== $('#fecha-cita').value) return;
+        if (!response.ok) throw new Error(result.error || 'No se pudieron cargar los horarios.');
+        horario.textContent = `Lunes a viernes: ${result.horario.lunesViernes} · Sábado: ${result.horario.sabado} · Hora de Lima`;
+        const availableSlots = result.slots.filter((slot) => slot.disponible);
+        horas.replaceChildren(new Option(
+          availableSlots.length ? 'Selecciona una hora' : 'No hay horas disponibles',
+          '',
+        ));
+        for (const slot of availableSlots) {
+          horas.add(new Option(slot.hora, slot.hora));
+        }
+        ayuda.textContent = availableSlots.length
+          ? `Una cita por ${tipoAtencion} cada 30 minutos. Horario de Lima.`
+          : 'No quedan citas en esa fecha. Elige otro día; los domingos no hay atención.';
+        horas.disabled = availableSlots.length === 0;
+      } catch (error) {
+        if (requestId !== availabilityRequest) return;
+        horas.replaceChildren(new Option('No se pudieron cargar los horarios', ''));
+        ayuda.textContent = error.message || 'No se pudieron cargar los horarios de cita.';
+      }
+    }
+
+    async function cargarAgencias(lat = null, lng = null) {
+      try {
+        const q = lat != null && lng != null ? `?lat=${lat}&lng=${lng}` : '';
+        const respuesta = await fetch(`${api}/agencies${q}`, { credentials: 'include' });
+
+        if (!respuesta.ok) {
+          throw new Error('No se pudo cargar la lista de agencias.');
+        }
+
+        const data = await leerRespuesta(respuesta);
+        actualizarListaAgencias(data);
+      } catch (error) {
+        console.error(error);
+        mostrarError(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo cargar la lista de agencias.');
+      }
+    }
+
+    async function startUserWindow() {
+      try {
+        const response = await fetch(`${api}/auth/me?role=user`, { credentials: 'include' });
+        if (response.status === 401 || response.status === 403) {
+          window.location.replace('/login.html?role=user');
+          return;
+        }
+        if (!response.ok) throw new Error('No se pudo verificar la sesión.');
+
+        document.querySelector('main').classList.remove('hidden');
+        $('#fecha-cita').min = fechaLima();
+        $('#fecha-cita').max = fechaLima(14);
+        $('#fecha-cita').value = fechaLima();
+        $('#fecha-cita').addEventListener('change', cargarHorarios);
+        $('#tipo-atencion').addEventListener('change', cargarHorarios);
+        $('#tr').addEventListener('change', mostrarGuiaOperacion);
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            ({ coords }) => cargarAgencias(coords.latitude, coords.longitude),
+            () => cargarAgencias()
+          );
+        } else {
+          cargarAgencias();
+        }
+      } catch (error) {
+        document.querySelector('main').classList.remove('hidden');
+        mostrarError(error.message || 'No se pudo conectar con el servidor.');
+      }
+    }
+
+    $('#pedir').onclick = async () => {
+      const agenciaId = $('#ag').value;
+      const tramite = $('#tr').value;
+      const tipoAtencion = $('#tipo-atencion').value;
+      const nombre = $('#personaNombre').value.trim().replace(/\s+/g, ' ');
+      const dni = $('#personaDni').value.trim();
+      const fechaCita = $('#fecha-cita').value;
+      const horaCita = $('#hora-cita').value;
+
+      if (!agenciaId) {
+        mostrarError('Selecciona una agencia antes de continuar.');
+        return;
+      }
+      if (!tramite) {
+        $('#tr').reportValidity();
+        return;
+      }
+      if (!tipoAtencion) {
+        $('#tipo-atencion').reportValidity();
+        return;
+      }
+      if (!$('#personaNombre').checkValidity() || !$('#personaDni').checkValidity()) {
+        $('#personaNombre').reportValidity();
+        $('#personaDni').reportValidity();
+        return;
+      }
+      if (!fechaCita || !horaCita) {
+        $('#cita-ayuda').textContent = 'Selecciona una fecha y una hora disponibles para reservar tu cita.';
+        return;
+      }
+
+      $('#pedir').disabled = true;
+      $('#pedir').textContent = 'Reservando cita…';
+      resetearNotificacion();
+
+      try {
+        const respuesta = await fetch(`${api}/tickets`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agencyId: agenciaId,
+            tramite,
+            tipoAtencion,
+            nombre,
+            dni,
+            fechaCita,
+            horaCita,
+          })
+        });
+
+        const payload = await leerRespuesta(respuesta);
+
+        if (!respuesta.ok) {
+          throw new Error(payload.error || 'No se pudo generar el turno.');
+        }
+
+        const ticket = payload;
+        $('#paso1').classList.add('hidden');
+        $('#paso2').classList.remove('hidden');
+        $('#tid').textContent = ticket.id;
+        $('#persona').textContent = `${ticket.persona.nombre} · DNI ${ticket.persona.dni}`;
+        const etiquetaAtencion = ticket.tipoAtencion === 'plataforma' ? 'Plataforma' : 'Ventanilla';
+        $('#detalle-cita').textContent =
+          `${ticket.tramite} · ${etiquetaAtencion}: ${ticket.cita.fecha} a las ${ticket.cita.hora}`;
+        $('#qr').src = ticket.qr;
+        pintar(ticket);
+
+        if ('Notification' in window && Notification.permission === 'default') {
+          Notification.requestPermission().catch(() => {});
+        }
+
+        if (eventSource) {
+          eventSource.close();
+        }
+
+        eventSource = new EventSource(`${api}/tickets/${ticket.agencia}/${ticket.id}/events`, {
+          withCredentials: true,
+        });
+        eventSource.addEventListener('estado', (event) => {
+          try {
+            pintar(JSON.parse(event.data));
+          } catch (error) {
+            console.error('Error al procesar evento de estado:', error);
+          }
+        });
+
+        eventSource.addEventListener('push', (event) => {
+          try {
+            const push = JSON.parse(event.data);
+            $('#push').textContent = `${push.mensaje} — restan ${push.restan} turnos`;
+            $('#push').classList.remove('hidden');
+
+            if (Notification.permission === 'granted' && push.titulo) {
+              new Notification(push.titulo, { body: push.mensaje });
+            }
+          } catch (error) {
+            console.error('Error al procesar evento push:', error);
+          }
+        });
+
+        eventSource.onerror = () => {
+          $('#push').textContent = 'Se perdió la conexión con la fila en tiempo real.';
+          $('#push').classList.remove('hidden');
+        };
+      } catch (error) {
+        console.error(error);
+        $('#paso1').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        mostrarError(error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa la URL del backend en config.js y FRONTEND_ORIGINS en Render.'
+          : error.message || 'No se pudo generar el turno.');
+      } finally {
+        $('#pedir').disabled = false;
+        $('#pedir').textContent = 'Reservar cita y generar QR';
+      }
+    };
+
+    startUserWindow();
+  </script>
+</body>
+</html>

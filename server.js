@@ -42,11 +42,14 @@ const getFirebaseWebApiKey = () => {
 };
 
 const getDniHash = (dni) => {
-  const secret = process.env.DNI_HASH_SECRET;
-  if (!secret || secret.length < 32) {
-    throw new Error('DNI_HASH_SECRET debe configurarse con al menos 32 caracteres');
+  const secret = process.env.DNI_HASH_SECRET || SECRET;
+  if (secret.length < 32) {
+    throw new Error('La clave para proteger el DNI debe tener al menos 32 caracteres');
   }
-  return crypto.createHmac('sha256', secret).update(dni).digest('hex');
+  const dniKey = crypto.createHmac('sha256', secret)
+    .update('bcp-ticket-express:dni-registry:v1')
+    .digest();
+  return crypto.createHmac('sha256', dniKey).update(dni).digest('hex');
 };
 
 const sendVerificationEmail = async (idToken, apiKey = getFirebaseWebApiKey()) => {
@@ -311,8 +314,8 @@ app.post('/api/v1/auth/login', async (req, res) => {
     res.json({ role, username: decodedToken.email || email });
   } catch (error) {
     console.error('Firebase login configuration or verification failed:', error.message);
-    if (/DNI_HASH_SECRET/.test(error.message)) {
-      return res.status(503).json({ error: 'No se puede validar el DNI. Configura DNI_HASH_SECRET en el servidor.' });
+    if (/clave para proteger el DNI/i.test(error.message)) {
+      return res.status(503).json({ error: 'No se puede validar el DNI. Configura una clave estable de al menos 32 caracteres en el servidor.' });
     }
     res.status(503).json({ error: 'No se pudo conectar con Firebase. Revisa la configuración del backend.' });
   }
@@ -348,8 +351,8 @@ app.post('/api/v1/auth/register', async (req, res) => {
       return res.status(409).json({ error: error.message });
     }
     console.error('Firebase self-registration failed:', error.message);
-    if (/DNI_HASH_SECRET/.test(error.message)) {
-      return res.status(503).json({ error: 'El registro no está disponible. Falta configurar la protección de DNI en el servidor.' });
+    if (/clave para proteger el DNI/i.test(error.message)) {
+      return res.status(503).json({ error: 'El registro no está disponible. Revisa la clave para proteger el DNI en el servidor.' });
     }
     if (error.message === 'No se pudo enviar el correo de verificación'
       || error.message === 'No se pudo iniciar el proceso de verificación del correo') {
@@ -389,8 +392,8 @@ app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
       return res.status(409).json({ error: error.message });
     }
     console.error('Firebase user creation failed:', error.message);
-    if (/DNI_HASH_SECRET/.test(error.message)) {
-      return res.status(503).json({ error: 'El registro no está disponible. Falta configurar la protección de DNI en el servidor.' });
+    if (/clave para proteger el DNI/i.test(error.message)) {
+      return res.status(503).json({ error: 'El registro no está disponible. Revisa la clave para proteger el DNI en el servidor.' });
     }
     if (error.message === 'No se pudo enviar el correo de verificación'
       || error.message === 'No se pudo iniciar el proceso de verificación del correo') {

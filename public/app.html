@@ -21,8 +21,15 @@
     <section id="paso1" class="card">
       <h2>Elige tu agencia</h2>
       <div id="lista">Buscando agencias cercanas…</div>
+      <label for="personaNombre">Nombre de la persona</label>
+      <input id="personaNombre" name="personaNombre" autocomplete="name" minlength="2" maxlength="100" required>
+      <label for="personaDni">DNI de la persona</label>
+      <input id="personaDni" name="personaDni" type="text" inputmode="numeric" autocomplete="off"
+        minlength="8" maxlength="8" pattern="[0-9]{8}" required>
+      <p class="muted">Cada cita genera un QR individual. El DNI no se incluye en el QR y se muestra parcialmente oculto.</p>
       <label for="ag">Agencia</label>
       <select id="ag"></select>
+      <p id="horario-agencia" class="muted"></p>
       <label for="tr">Trámite</label>
       <select id="tr">
         <option value="Caja / Depósitos">Caja / Depósitos</option>
@@ -30,16 +37,25 @@
         <option value="Créditos">Créditos</option>
         <option value="Apertura de cuenta">Apertura de cuenta</option>
       </select>
-      <button id="pedir">Sacar turno</button>
+      <label for="fecha-cita">Fecha de la cita</label>
+      <input id="fecha-cita" type="date" required>
+      <label for="hora-cita">Hora disponible</label>
+      <select id="hora-cita" required>
+        <option value="">Selecciona una sede y fecha</option>
+      </select>
+      <p id="cita-ayuda" class="muted" role="status">Una cita por sede cada 30 minutos. Reserva hasta con 14 días de anticipación.</p>
+      <button id="pedir">Reservar cita y generar QR</button>
     </section>
 
     <section id="paso2" class="card ticket hidden">
       <h2>Tu turno</h2>
       <p class="num" id="tid"></p>
+      <p id="persona"></p>
+      <p id="detalle-cita"></p>
       <p><span id="estado" class="estado"></span></p>
       <p id="previos"></p>
       <img id="qr" alt="Código QR de tu turno" width="240" height="240">
-      <p style="font-size:13px">Muestra este código QR al administrador para validar tu llegada.</p>
+      <p style="font-size:13px">Muestra este código QR al llegar a la sede para confirmar tu asistencia a la cita.</p>
     </section>
   </main>
 
@@ -48,6 +64,7 @@
     const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
     const api = `${apiBaseUrl}/api/v1`;
     let eventSource = null;
+    let availabilityRequest = 0;
 
     $('#logout').addEventListener('click', async () => {
       try {
@@ -100,7 +117,7 @@
       $('#estado').textContent = etiquetas[estado] || estado;
       $('#estado').className = `estado ${estado}`;
       $('#previos').textContent = ['ESPERANDO', 'EN_SALA'].includes(estado)
-        ? `Turnos antes que tú: ${turnosPrevios}`
+        ? `Citas registradas antes que tú: ${turnosPrevios}`
         : '';
     }
 
@@ -118,15 +135,68 @@
         return `
           <div class="agencia">
             <span>${a.nombre}${distancia}</span>
-            <span>${a.enCola} en cola · ~${a.tiempoEstimadoMin} min</span>
+            <span>${a.enCola} citas esperando · ~${a.tiempoEstimadoMin} min</span>
+            <small>Atención: lun–vie ${a.horario.lunesViernes} · sáb ${a.horario.sabado}</small>
             ${direccion}
           </div>
         `;
       }).join('');
 
       $('#ag').innerHTML = agencias.map(a => `<option value="${a.id}">${a.nombre}</option>`).join('');
+      $('#ag').onchange = cargarHorarios;
+      cargarHorarios();
       $('#pedir').disabled = false;
-      $('#pedir').textContent = 'Sacar turno';
+      $('#pedir').textContent = 'Reservar cita y generar QR';
+    }
+
+    function fechaLima(offsetDays = 0) {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Lima',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(new Date());
+      const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal').map(({ type, value }) => [type, value]));
+      const date = new Date(`${values.year}-${values.month}-${values.day}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() + offsetDays);
+      return date.toISOString().slice(0, 10);
+    }
+
+    async function cargarHorarios() {
+      const fecha = $('#fecha-cita').value;
+      const agenciaId = $('#ag').value;
+      const horario = $('#horario-agencia');
+      const horas = $('#hora-cita');
+      const ayuda = $('#cita-ayuda');
+      if (!agenciaId || !fecha) return;
+
+      const requestId = ++availabilityRequest;
+      horas.replaceChildren(new Option('Buscando horarios disponibles…', ''));
+      horas.disabled = true;
+      try {
+        const query = new URLSearchParams({ agencyId: agenciaId, date: fecha });
+        const response = await fetch(`${api}/appointments/slots?${query}`, { credentials: 'include' });
+        const result = await leerRespuesta(response);
+        if (requestId !== availabilityRequest || agenciaId !== $('#ag').value || fecha !== $('#fecha-cita').value) return;
+        if (!response.ok) throw new Error(result.error || 'No se pudieron cargar los horarios.');
+        horario.textContent = `Lunes a viernes: ${result.horario.lunesViernes} · Sábado: ${result.horario.sabado} · Hora de Lima`;
+        const availableSlots = result.slots.filter((slot) => slot.disponible);
+        horas.replaceChildren(new Option(
+          availableSlots.length ? 'Selecciona una hora' : 'No hay horas disponibles',
+          '',
+        ));
+        for (const slot of availableSlots) {
+          horas.add(new Option(slot.hora, slot.hora));
+        }
+        ayuda.textContent = availableSlots.length
+          ? 'Una cita por sede cada 30 minutos. Horario de Lima.'
+          : 'No quedan citas en esa fecha. Elige otro día; los domingos no hay atención.';
+        horas.disabled = availableSlots.length === 0;
+      } catch (error) {
+        if (requestId !== availabilityRequest) return;
+        horas.replaceChildren(new Option('No se pudieron cargar los horarios', ''));
+        ayuda.textContent = error.message || 'No se pudieron cargar los horarios de cita.';
+      }
     }
 
     async function cargarAgencias(lat = null, lng = null) {
@@ -158,6 +228,10 @@
         if (!response.ok) throw new Error('No se pudo verificar la sesión.');
 
         document.querySelector('main').classList.remove('hidden');
+        $('#fecha-cita').min = fechaLima();
+        $('#fecha-cita').max = fechaLima(14);
+        $('#fecha-cita').value = fechaLima();
+        $('#fecha-cita').addEventListener('change', cargarHorarios);
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
             ({ coords }) => cargarAgencias(coords.latitude, coords.longitude),
@@ -175,14 +249,27 @@
     $('#pedir').onclick = async () => {
       const agenciaId = $('#ag').value;
       const tramite = $('#tr').value;
+      const nombre = $('#personaNombre').value.trim().replace(/\s+/g, ' ');
+      const dni = $('#personaDni').value.trim();
+      const fechaCita = $('#fecha-cita').value;
+      const horaCita = $('#hora-cita').value;
 
       if (!agenciaId) {
         mostrarError('Selecciona una agencia antes de continuar.');
         return;
       }
+      if (!$('#personaNombre').checkValidity() || !$('#personaDni').checkValidity()) {
+        $('#personaNombre').reportValidity();
+        $('#personaDni').reportValidity();
+        return;
+      }
+      if (!fechaCita || !horaCita) {
+        $('#cita-ayuda').textContent = 'Selecciona una fecha y una hora disponibles para reservar tu cita.';
+        return;
+      }
 
       $('#pedir').disabled = true;
-      $('#pedir').textContent = 'Generando turno…';
+      $('#pedir').textContent = 'Reservando cita…';
       resetearNotificacion();
 
       try {
@@ -190,7 +277,7 @@
           method: 'POST',
           credentials: 'include',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agencyId: agenciaId, tramite })
+          body: JSON.stringify({ agencyId: agenciaId, tramite, nombre, dni, fechaCita, horaCita })
         });
 
         const payload = await leerRespuesta(respuesta);
@@ -203,6 +290,8 @@
         $('#paso1').classList.add('hidden');
         $('#paso2').classList.remove('hidden');
         $('#tid').textContent = ticket.id;
+        $('#persona').textContent = `${ticket.persona.nombre} · DNI ${ticket.persona.dni}`;
+        $('#detalle-cita').textContent = `Cita reservada: ${ticket.cita.fecha} a las ${ticket.cita.hora}`;
         $('#qr').src = ticket.qr;
         pintar(ticket);
 
@@ -251,7 +340,7 @@
           : error.message || 'No se pudo generar el turno.');
       } finally {
         $('#pedir').disabled = false;
-        $('#pedir').textContent = 'Sacar turno';
+        $('#pedir').textContent = 'Reservar cita y generar QR';
       }
     };
 

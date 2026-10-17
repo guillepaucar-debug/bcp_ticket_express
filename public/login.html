@@ -32,11 +32,15 @@
       <section id="register-section" class="hidden">
         <p class="eyebrow">NUEVA CUENTA</p>
         <h1>Crear cuenta</h1>
-        <p class="muted">Regístrate como usuario para solicitar y consultar tus turnos.</p>
+        <p class="muted">Regístrate con tu DNI. Enviaremos un enlace de verificación al correo; deberás confirmarlo antes de iniciar sesión.</p>
 
         <form id="register-form">
           <label for="register-name">Nombre</label>
           <input id="register-name" name="displayName" type="text" maxlength="80" autocomplete="name" required>
+
+          <label for="register-dni">DNI</label>
+          <input id="register-dni" name="dni" type="text" inputmode="numeric" autocomplete="off"
+            minlength="8" maxlength="8" pattern="[0-9]{8}" required>
 
           <label for="register-email">Correo electrónico</label>
           <input id="register-email" name="email" type="email" autocomplete="email" required>
@@ -124,6 +128,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             displayName: document.querySelector('#register-name').value,
+            dni: document.querySelector('#register-dni').value.trim(),
             email: document.querySelector('#register-email').value,
             password: document.querySelector('#register-password').value,
           }),
@@ -137,7 +142,7 @@
         registerSection.classList.add('hidden');
         loginSection.classList.remove('hidden');
         const loginMessage = document.querySelector('#login-message');
-        loginMessage.textContent = 'Cuenta creada correctamente. Ya puedes iniciar sesión.';
+        loginMessage.textContent = 'Cuenta creada. Revisa tu correo y confirma el enlace de verificación antes de iniciar sesión.';
         loginMessage.classList.remove('hidden');
       } catch (error) {
         message.textContent = error instanceof TypeError

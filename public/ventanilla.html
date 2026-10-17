@@ -23,13 +23,13 @@
     <section class="card counter-controls">
       <div>
         <p class="eyebrow">OPERACIÓN DE AGENCIA</p>
-        <h1>Control de turnos</h1>
+        <h1>Control de citas y turnos</h1>
         <p id="agency-address" class="muted">Selecciona una agencia para comenzar.</p>
       </div>
       <div class="counter-actions">
         <label for="ag">Agencia</label>
         <select id="ag" aria-label="Seleccionar agencia"></select>
-        <button id="sig" type="button">Llamar siguiente turno</button>
+        <button id="sig" type="button">Llamar siguiente cita</button>
       </div>
     </section>
 
@@ -47,7 +47,8 @@
         <div class="current-counter-details">
           <div>
             <span class="detail-label">Trámite</span>
-            <strong id="current-service">Esperando el próximo turno</strong>
+            <strong id="current-service">Esperando la próxima cita</strong>
+            <p id="current-appointment" class="muted"></p>
           </div>
           <div>
             <span class="detail-label">Llamado a atención</span>
@@ -61,7 +62,7 @@
           <span class="stat-icon" aria-hidden="true">↗</span>
           <span class="detail-label">En cola</span>
           <strong id="queue-count">0</strong>
-          <span class="stat-caption">turnos pendientes</span>
+          <span class="stat-caption">citas pendientes para llamar</span>
         </article>
         <article class="stat-card">
           <span class="stat-icon stat-icon-orange" aria-hidden="true">✓</span>
@@ -76,18 +77,18 @@
       <div class="section-heading">
         <div>
           <p class="eyebrow">ACCESO A LA AGENCIA</p>
-          <h2>Validar ticket QR</h2>
+          <h2>Validar QR de cita</h2>
         </div>
         <span class="history-count">Solo tickets pendientes</span>
       </div>
-      <p class="muted">Escanea el QR para registrar la llegada antes de llamar al turno. Si ya fue llamado, el panel te lo indicará.</p>
+      <p class="muted">Escanea el QR al llegar para confirmar asistencia. La ventanilla llamará las citas por orden de horario reservado.</p>
       <div class="validation-layout">
         <div id="admin-qr-reader" aria-label="Lector de código QR"></div>
         <div class="validation-actions">
           <button id="camera-button" class="secondary-button" type="button">Activar cámara</button>
           <label for="qr-payload">Contenido del QR</label>
           <input id="qr-payload" type="text" autocomplete="off" placeholder="bcp://ticket?id=T001&agencia=0101&hash=...">
-          <button id="validate-button" type="button">Validar ticket</button>
+          <button id="validate-button" type="button">Registrar llegada</button>
           <p id="validation-result" class="validation-result hidden" role="status" aria-live="polite"></p>
         </div>
       </div>
@@ -100,11 +101,16 @@
           <h2>Crear usuario normal</h2>
         </div>
       </div>
-      <p class="muted">La cuenta se guardará en Firebase Authentication con permisos de usuario. No podrá entrar a esta pantalla de administración.</p>
+      <p class="muted">La cuenta se guardará en Firebase Authentication con permisos de usuario. El DNI debe ser único y deberá confirmar el enlace enviado al correo antes de iniciar sesión.</p>
       <form id="create-user-form" class="create-user-form">
         <div>
           <label for="new-user-name">Nombre</label>
           <input id="new-user-name" name="displayName" type="text" maxlength="80" autocomplete="name" required>
+        </div>
+        <div>
+          <label for="new-user-dni">DNI</label>
+          <input id="new-user-dni" name="dni" type="text" inputmode="numeric" autocomplete="off"
+            minlength="8" maxlength="8" pattern="[0-9]{8}" required>
         </div>
         <div>
           <label for="new-user-email">Correo electrónico</label>
@@ -189,6 +195,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             displayName: $('#new-user-name').value,
+            dni: $('#new-user-dni').value.trim(),
             email: $('#new-user-email').value,
             password: $('#new-user-password').value,
           }),
@@ -196,7 +203,7 @@
         const createdUser = await readJson(response);
         if (!response.ok) throw new Error(createdUser.error || 'No se pudo crear el usuario.');
 
-        result.textContent = `Cuenta creada para ${createdUser.displayName} (${createdUser.email}). Ya puede iniciar sesión como usuario.`;
+        result.textContent = `Cuenta creada para ${createdUser.displayName} (${createdUser.email}). Se envió un enlace de verificación; deberá confirmar su correo antes de iniciar sesión.`;
         result.classList.remove('validation-error');
         result.classList.add('validation-success');
         result.classList.remove('hidden');
@@ -268,11 +275,16 @@
     }
 
     function renderBoard(board) {
-      $('#agency-address').textContent = board.agencia.direccion;
+      $('#agency-address').textContent = `${board.agencia.direccion} · Lunes a viernes ${board.agencia.horario.lunesViernes}, sábados ${board.agencia.horario.sabado}`;
       $('#current-number').textContent = board.atendiendo?.id || '—';
       $('#current-status').textContent = board.atendiendo ? 'En atención' : 'Sin atención';
       $('#current-status').classList.toggle('is-active', Boolean(board.atendiendo));
-      $('#current-service').textContent = board.atendiendo?.tramite || 'Esperando el próximo turno';
+      $('#current-service').textContent = board.atendiendo
+        ? `${board.atendiendo.tramite} · ${board.atendiendo.persona}`
+        : 'Esperando la próxima cita';
+      $('#current-appointment').textContent = board.atendiendo
+        ? `Cita: ${board.atendiendo.cita.fecha} a las ${board.atendiendo.cita.hora}`
+        : '';
       $('#current-time').textContent = formatTime(board.atendiendo?.llamado);
       $('#queue-count').textContent = board.enCola;
       $('#served-count').textContent = board.totalAtendidos;
@@ -313,7 +325,7 @@
           showValidationResult(`El turno ${result.id} ya fue llamado y está en atención. No es necesario validarlo de nuevo.`, true);
         } else {
           showValidationResult(
-            `Ticket ${result.id} validado. El usuario quedó registrado en sala; tiene ${result.turnosPrevios} turnos antes.`,
+            `Cita ${result.id} (${result.cita.fecha}, ${result.cita.hora}) validada. ${result.persona.nombre} quedó en espera para su horario.`,
             true,
           );
         }
@@ -420,7 +432,7 @@
     });
     nextButton.addEventListener('click', async () => {
       nextButton.disabled = true;
-      nextButton.textContent = 'Llamando turno…';
+      nextButton.textContent = 'Llamando cita…';
       notice.classList.add('hidden');
 
       try {
@@ -429,15 +441,15 @@
           credentials: 'include',
         });
         const result = await readJson(response);
-        if (!response.ok) throw new Error(result.error || 'No se pudo llamar al siguiente turno.');
+        if (!response.ok) throw new Error(result.error || 'No se pudo llamar a la siguiente cita.');
         await loadBoard();
-        showNotice(`Turno ${result.turno} llamado correctamente.`);
+        showNotice(`Cita ${result.turno} llamada correctamente.`);
       } catch (error) {
-        showNotice(error.message || 'No se pudo llamar al siguiente turno.', true);
+        showNotice(error.message || 'No se pudo llamar a la siguiente cita.', true);
         await loadBoard();
       } finally {
         nextButton.disabled = false;
-        nextButton.textContent = 'Llamar siguiente turno';
+        nextButton.textContent = 'Llamar siguiente cita';
       }
     });
 

@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import QRCode from 'qrcode';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -38,6 +39,91 @@ const getFirebaseWebApiKey = () => {
   const apiKey = process.env.FIREBASE_WEB_API_KEY;
   if (!apiKey) throw new Error('FIREBASE_WEB_API_KEY no está configurada');
   return apiKey;
+};
+
+const getDniHash = (dni) => {
+  const secret = process.env.DNI_HASH_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error('DNI_HASH_SECRET debe configurarse con al menos 32 caracteres');
+  }
+  return crypto.createHmac('sha256', secret).update(dni).digest('hex');
+};
+
+const sendVerificationEmail = async (idToken, apiKey = getFirebaseWebApiKey()) => {
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken }),
+    },
+  );
+  const result = await response.json();
+  if (!response.ok) {
+    console.error('Firebase email verification request failed:', result.error?.message || response.status);
+    throw new Error('No se pudo enviar el correo de verificación');
+  }
+};
+
+const createUserWithDni = async ({ email, password, displayName, dni }) => {
+  const dniHash = getDniHash(dni);
+  const apiKey = getFirebaseWebApiKey();
+  const auth = getFirebaseAuth();
+  const db = getFirestore(auth.app);
+  const dniRef = db.collection('dni_registry').doc(dniHash);
+  let newUser;
+
+  try {
+    newUser = await auth.createUser({ email, password, displayName });
+    await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
+    await db.runTransaction(async (transaction) => {
+      const existingDni = await transaction.get(dniRef);
+      if (existingDni.exists) {
+        const error = new Error('Este DNI ya está asociado a una cuenta');
+        error.code = 'app/dni-already-registered';
+        throw error;
+      }
+      transaction.create(dniRef, {
+        uid: newUser.uid,
+        createdAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    const signInResponse = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const signInResult = await signInResponse.json();
+    if (!signInResponse.ok || typeof signInResult.idToken !== 'string') {
+      console.error('Firebase verification sign-in failed:', signInResult.error?.message || signInResponse.status);
+      throw new Error('No se pudo iniciar el proceso de verificación del correo');
+    }
+    await sendVerificationEmail(signInResult.idToken, apiKey);
+    return newUser;
+  } catch (error) {
+    if (newUser) {
+      try {
+        await db.runTransaction(async (transaction) => {
+          const registeredDni = await transaction.get(dniRef);
+          if (registeredDni.data()?.uid === newUser.uid) transaction.delete(dniRef);
+        });
+      } catch (cleanupError) {
+        console.error('Could not release DNI reservation after account creation failed:', cleanupError.message);
+      }
+    }
+    if (newUser) {
+      try {
+        await auth.deleteUser(newUser.uid);
+      } catch (cleanupError) {
+        console.error('Could not delete incomplete Firebase account:', cleanupError.message);
+      }
+    }
+    throw error;
+  }
 };
 
 const stripSlash = (url) => url.trim().replace(/\/+$/, '');
@@ -171,6 +257,15 @@ app.post('/api/v1/auth/login', async (req, res) => {
     if (!['user', 'admin'].includes(role)) {
       return res.status(403).json({ error: 'La cuenta todavía no tiene un rol asignado. Contacta al administrador.' });
     }
+    if (role === 'user' && !decodedToken.email_verified) {
+      try {
+        await sendVerificationEmail(authResult.idToken);
+      } catch (error) {
+        console.error('Could not resend verification email:', error.message);
+        return res.status(502).json({ error: 'No pudimos enviar el correo de verificación. Inténtalo de nuevo más tarde.' });
+      }
+      return res.status(403).json({ error: 'Verifica tu correo con el enlace que te enviamos para poder iniciar sesión.' });
+    }
 
     const cookieName = sessionCookieName(role);
     const previousSessionId = req.headers.cookie?.match(
@@ -199,6 +294,7 @@ app.post('/api/v1/auth/register', async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = req.body?.password;
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim() : '';
+  const dni = typeof req.body?.dni === 'string' ? req.body.dni.trim() : '';
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Ingresa un correo electrónico válido' });
@@ -209,23 +305,29 @@ app.post('/api/v1/auth/register', async (req, res) => {
   if (!displayName || displayName.length > 80) {
     return res.status(400).json({ error: 'Ingresa un nombre de hasta 80 caracteres' });
   }
+  if (!/^\d{8}$/.test(dni)) {
+    return res.status(400).json({ error: 'Ingresa un DNI válido de 8 dígitos' });
+  }
 
   try {
-    const auth = getFirebaseAuth();
-    const newUser = await auth.createUser({ email, password, displayName });
-    try {
-      await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
-    } catch (error) {
-      await auth.deleteUser(newUser.uid);
-      throw error;
-    }
+    const newUser = await createUserWithDni({ email, password, displayName, dni });
     res.status(201).json({ email: newUser.email, displayName: newUser.displayName, role: 'user' });
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
     }
+    if (error.code === 'app/dni-already-registered') {
+      return res.status(409).json({ error: error.message });
+    }
     console.error('Firebase self-registration failed:', error.message);
-    res.status(502).json({ error: 'No se pudo crear la cuenta en Firebase Authentication' });
+    if (/DNI_HASH_SECRET/.test(error.message)) {
+      return res.status(503).json({ error: 'El registro no está disponible. Falta configurar la protección de DNI en el servidor.' });
+    }
+    if (error.message === 'No se pudo enviar el correo de verificación'
+      || error.message === 'No se pudo iniciar el proceso de verificación del correo') {
+      return res.status(502).json({ error: 'No se pudo enviar el correo de verificación. No se creó la cuenta; inténtalo de nuevo.' });
+    }
+    res.status(502).json({ error: 'No se pudo completar el registro. Revisa la configuración de Firebase Authentication y Cloud Firestore.' });
   }
 });
 
@@ -233,6 +335,7 @@ app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
   const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
   const password = req.body?.password;
   const displayName = typeof req.body?.displayName === 'string' ? req.body.displayName.trim() : '';
+  const dni = typeof req.body?.dni === 'string' ? req.body.dni.trim() : '';
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return res.status(400).json({ error: 'Ingresa un correo electrónico válido' });
@@ -243,23 +346,29 @@ app.post('/api/v1/admin/users', requireApiRole('admin'), async (req, res) => {
   if (!displayName || displayName.length > 80) {
     return res.status(400).json({ error: 'Ingresa un nombre de hasta 80 caracteres' });
   }
+  if (!/^\d{8}$/.test(dni)) {
+    return res.status(400).json({ error: 'Ingresa un DNI válido de 8 dígitos' });
+  }
 
   try {
-    const auth = getFirebaseAuth();
-    const newUser = await auth.createUser({ email, password, displayName });
-    try {
-      await auth.setCustomUserClaims(newUser.uid, { role: 'user' });
-    } catch (error) {
-      await auth.deleteUser(newUser.uid);
-      throw error;
-    }
+    const newUser = await createUserWithDni({ email, password, displayName, dni });
     res.status(201).json({ uid: newUser.uid, email: newUser.email, displayName: newUser.displayName, role: 'user' });
   } catch (error) {
     if (error.code === 'auth/email-already-exists') {
       return res.status(409).json({ error: 'Ya existe una cuenta con ese correo' });
     }
+    if (error.code === 'app/dni-already-registered') {
+      return res.status(409).json({ error: error.message });
+    }
     console.error('Firebase user creation failed:', error.message);
-    res.status(502).json({ error: 'No se pudo crear la cuenta en Firebase Authentication' });
+    if (/DNI_HASH_SECRET/.test(error.message)) {
+      return res.status(503).json({ error: 'El registro no está disponible. Falta configurar la protección de DNI en el servidor.' });
+    }
+    if (error.message === 'No se pudo enviar el correo de verificación'
+      || error.message === 'No se pudo iniciar el proceso de verificación del correo') {
+      return res.status(502).json({ error: 'No se pudo enviar el correo de verificación. No se creó la cuenta; inténtalo de nuevo.' });
+    }
+    res.status(502).json({ error: 'No se pudo completar el registro. Revisa la configuración de Firebase Authentication y Cloud Firestore.' });
   }
 });
 
@@ -299,8 +408,8 @@ const agencies = {
     direccion: 'Av. Paseo de la República 4870, Miraflores',
     lat: -12.1211,
     lng: -77.0297,
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
     last: 0,
-    serving: 0,
   },
   '0102': {
     id: '0102',
@@ -308,8 +417,8 @@ const agencies = {
     direccion: 'Esquina de la Av. R. Rivera Navarrete con la Av. Juan de Arona, San Isidro',
     lat: -12.0977,
     lng: -77.0365,
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
     last: 0,
-    serving: 0,
   },
   '0103': {
     id: '0103',
@@ -317,8 +426,8 @@ const agencies = {
     direccion: 'Jirón Carabaya 103-14 / Calle Coca N° 451-459, Cercado de Lima',
     lat: -12.0464,
     lng: -77.0306,
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
     last: 0,
-    serving: 0,
   },
   '0104': {
     id: '0104',
@@ -326,8 +435,8 @@ const agencies = {
     direccion: 'Calle Monte Grande 149, Santiago de Surco',
     lat: -12.1398,
     lng: -76.9994,
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
     last: 0,
-    serving: 0,
   },
   '0105': {
     id: '0105',
@@ -335,8 +444,8 @@ const agencies = {
     direccion: 'Av. Elmer Faucett 435, Callao',
     lat: -12.0561,
     lng: -77.1175,
+    horario: { lunesViernes: { apertura: '09:00', cierre: '18:00' }, sabado: { apertura: '09:00', cierre: '13:00' } },
     last: 0,
-    serving: 0,
   },
 };
 const tickets = new Map();
@@ -353,6 +462,86 @@ const readAgencyId = (agencyId) => {
   const normalized = agencyId.trim();
   return validateAgencyId(normalized) ? normalized : null;
 };
+
+const limaParts = (date = new Date()) => Object.fromEntries(
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Lima',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date)
+    .filter((part) => part.type !== 'literal')
+    .map(({ type, value }) => [type, value]),
+);
+
+const dateWithinBookingWindow = (date) => {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (parsed.toISOString().slice(0, 10) !== date) return false;
+  const todayParts = limaParts();
+  const today = `${todayParts.year}-${todayParts.month}-${todayParts.day}`;
+  const latest = new Date(`${today}T00:00:00Z`);
+  latest.setUTCDate(latest.getUTCDate() + 14);
+  return date >= today && date <= latest.toISOString().slice(0, 10);
+};
+
+const appointmentTimestamp = (date, time) => Date.parse(`${date}T${time}:00-05:00`);
+
+const getSlotsForDate = (agency, date) => {
+  if (!dateWithinBookingWindow(date)) return null;
+  const weekday = new Date(`${date}T00:00:00Z`).getUTCDay();
+  const schedule = weekday >= 1 && weekday <= 5
+    ? agency.horario.lunesViernes
+    : weekday === 6
+      ? agency.horario.sabado
+      : null;
+  if (!schedule) return [];
+
+  const opening = Number(schedule.apertura.slice(0, 2)) * 60 + Number(schedule.apertura.slice(3, 5));
+  const closing = Number(schedule.cierre.slice(0, 2)) * 60 + Number(schedule.cierre.slice(3, 5));
+  const bookedSlots = new Set([...tickets.values()]
+    .filter((ticket) => ticket.agencia === agency.id && ticket.fechaCita === date && ticket.estado !== 'ATENDIDO')
+    .map((ticket) => ticket.horaCita));
+  const now = Date.now();
+  const slots = [];
+  for (let minute = opening; minute + 30 <= closing; minute += 30) {
+    const time = `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+    slots.push({
+      hora: time,
+      disponible: appointmentTimestamp(date, time) > now && !bookedSlots.has(time),
+    });
+  }
+  return slots;
+};
+
+const getAgencyHours = (agency) => ({
+  lunesViernes: `${agency.horario.lunesViernes.apertura}–${agency.horario.lunesViernes.cierre}`,
+  sabado: `${agency.horario.sabado.apertura}–${agency.horario.sabado.cierre}`,
+});
+
+const agencyIsOpenNow = (agency, timestamp = Date.now()) => {
+  const current = limaParts(new Date(timestamp));
+  const weekday = new Date(`${current.year}-${current.month}-${current.day}T00:00:00Z`).getUTCDay();
+  const schedule = weekday >= 1 && weekday <= 5
+    ? agency.horario.lunesViernes
+    : weekday === 6
+      ? agency.horario.sabado
+      : null;
+  if (!schedule) return false;
+  const currentMinute = Number(current.hour) * 60 + Number(current.minute);
+  const opening = Number(schedule.apertura.slice(0, 2)) * 60 + Number(schedule.apertura.slice(3, 5));
+  const closing = Number(schedule.cierre.slice(0, 2)) * 60 + Number(schedule.cierre.slice(3, 5));
+  return currentMinute >= opening && currentMinute < closing;
+};
+
+const arrivedAppointments = (agencyId) => [...tickets.values()]
+  .filter((ticket) => ticket.agencia === agencyId && ticket.estado === 'EN_SALA')
+  .sort((a, b) => a.citaAt - b.citaAt || a.creado - b.creado);
 
 const km = (a, b, c, d) => {
   const r = (x) => (x * Math.PI) / 180;
@@ -374,8 +563,15 @@ const view = (t) => ({
   id: t.id,
   agencia: t.agencia,
   tramite: t.tramite,
+  persona: t.persona ? {
+    nombre: t.persona.nombre,
+    dni: `****${t.persona.dni.slice(-4)}`,
+  } : null,
+  cita: { fecha: t.fechaCita, hora: t.horaCita },
   estado: t.estado,
-  turnosPrevios: Math.max(0, (t.numero ?? 0) - (agencies[t.agencia]?.serving ?? 0) - 1),
+  turnosPrevios: t.citaAt > Date.now()
+    ? 0
+    : arrivedAppointments(t.agencia).filter((ticket) => ticket.citaAt < t.citaAt && ticket.citaAt <= Date.now()).length,
 });
 
 const validateAgencyId = (agencyId) => typeof agencyId === 'string' && AGENCY_ID_PATTERN.test(agencyId);
@@ -399,18 +595,36 @@ app.get('/api/v1/agencies', requireAuthenticated, (req, res) => {
   const lat = Number.parseFloat(req.query.lat);
   const lng = Number.parseFloat(req.query.lng);
   const list = Object.values(agencies).map((a) => {
-    const enCola = Math.max(0, a.last - a.serving);
+    const enCola = arrivedAppointments(a.id).filter((ticket) => ticket.citaAt <= Date.now()).length;
     return {
       id: a.id,
       nombre: a.nombre,
       direccion: a.direccion,
       enCola,
       tiempoEstimadoMin: enCola * 4,
+      horario: getAgencyHours(a),
       distanciaKm: Number.isFinite(lat) && Number.isFinite(lng) ? +km(lat, lng, a.lat, a.lng).toFixed(1) : null,
     };
   });
   list.sort((x, y) => (x.distanciaKm ?? Number.MAX_SAFE_INTEGER) - (y.distanciaKm ?? Number.MAX_SAFE_INTEGER));
   res.json(list);
+});
+
+app.get('/api/v1/appointments/slots', requireApiRole('user'), (req, res) => {
+  const agencyId = readAgencyId(req.query.agencyId);
+  const agency = agencyId ? agencies[agencyId] : null;
+  if (!agency) return res.status(400).json({ error: 'Agencia no válida o inexistente' });
+  if (!dateWithinBookingWindow(req.query.date)) {
+    return res.status(400).json({ error: 'Selecciona una fecha entre hoy y los próximos 14 días' });
+  }
+
+  res.json({
+    agencia: agency.id,
+    fecha: req.query.date,
+    horario: getAgencyHours(agency),
+    zonaHoraria: 'America/Lima',
+    slots: getSlotsForDate(agency, req.query.date),
+  });
 });
 
 app.get('/api/v1/health', (_req, res) => {
@@ -437,14 +651,16 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
     }));
 
   res.json({
-    agencia: { id: ag.id, nombre: ag.nombre, direccion: ag.direccion },
+    agencia: { id: ag.id, nombre: ag.nombre, direccion: ag.direccion, horario: getAgencyHours(ag) },
     atendiendo: current ? {
       id: current.id,
       tramite: current.tramite,
       estado: current.estado,
       llamado: current.llamado,
+      cita: { fecha: current.fechaCita, hora: current.horaCita },
+      persona: current.persona.nombre,
     } : null,
-    enCola: Math.max(0, ag.last - ag.serving),
+    enCola: arrivedAppointments(ag.id).filter((ticket) => ticket.citaAt <= Date.now()).length,
     totalAtendidos: agencyTickets.filter((ticket) => ticket.estado === 'ATENDIDO').length,
     historial: history,
   });
@@ -452,11 +668,35 @@ app.get('/api/v1/agencies/:id/board', requireApiRole('admin'), (req, res) => {
 
 // ---- 2. Generación: ticket + hash dinámico + QR
 app.post('/api/v1/tickets', requireApiRole('user'), async (req, res) => {
-  const { agencyId, tramite } = req.body || {};
+  const { agencyId, tramite, nombre, dni, fechaCita, horaCita } = req.body || {};
   const normalizedAgencyId = readAgencyId(agencyId);
+  const normalizedName = typeof nombre === 'string' ? nombre.trim().replace(/\s+/g, ' ') : '';
+  const normalizedDni = typeof dni === 'string' ? dni.trim() : '';
 
   if (!normalizedAgencyId || !agencies[normalizedAgencyId]) {
     return res.status(400).json({ error: 'Agencia no válida o inexistente' });
+  }
+  if (normalizedName.length < 2 || normalizedName.length > 100 || /[\u0000-\u001f\u007f]/.test(normalizedName)) {
+    return res.status(400).json({ error: 'Ingresa el nombre de la persona (de 2 a 100 caracteres)' });
+  }
+  if (!/^\d{8}$/.test(normalizedDni)) {
+    return res.status(400).json({ error: 'Ingresa un DNI válido de 8 dígitos' });
+  }
+  if (!dateWithinBookingWindow(fechaCita) || typeof horaCita !== 'string') {
+    return res.status(400).json({ error: 'Selecciona una fecha y hora de cita disponibles' });
+  }
+  const availableSlots = getSlotsForDate(agencies[normalizedAgencyId], fechaCita);
+  const selectedSlot = availableSlots?.find((slot) => slot.hora === horaCita);
+  if (!selectedSlot?.disponible) {
+    return res.status(409).json({ error: 'Ese horario ya no está disponible. Actualiza los horarios e intenta de nuevo.' });
+  }
+  const duplicateActiveTicket = [...tickets.values()].some((ticket) =>
+    ticket.agencia === normalizedAgencyId
+    && ticket.persona?.dni === normalizedDni
+    && ticket.estado !== 'ATENDIDO'
+    && (ticket.estado !== 'ESPERANDO' || ticket.citaAt + 30 * 60 * 1000 > Date.now()));
+  if (duplicateActiveTicket) {
+    return res.status(409).json({ error: 'Este DNI ya tiene un turno activo en esta agencia' });
   }
 
   try {
@@ -469,6 +709,10 @@ app.post('/api/v1/tickets', requireApiRole('user'), async (req, res) => {
       numero: ag.last,
       agencia: ag.id,
       tramite: descripcion,
+      persona: { nombre: normalizedName, dni: normalizedDni },
+      fechaCita,
+      horaCita,
+      citaAt: appointmentTimestamp(fechaCita, horaCita),
       estado: 'ESPERANDO',
       notificado: false,
       creado: Date.now(),
@@ -529,6 +773,15 @@ app.post('/api/v1/tickets/validate', requireApiRole('admin'), (req, res) => {
   if (t.estado === 'ATENDIENDO') return res.json({ ...view(t), yaLlamado: true });
   if (t.estado === 'ATENDIDO') return res.status(409).json({ error: 'Este turno ya fue atendido' });
   if (t.estado !== 'ESPERANDO') return res.status(409).json({ error: `No se puede validar un ticket en estado ${t.estado}` });
+  if (!agencyIsOpenNow(agencies[agencia])) {
+    return res.status(409).json({ error: 'La agencia está cerrada. Registra tu llegada durante su horario de atención.' });
+  }
+  const now = Date.now();
+  const todayInLima = limaParts(new Date(now));
+  const today = `${todayInLima.year}-${todayInLima.month}-${todayInLima.day}`;
+  if (t.fechaCita !== today || now > t.citaAt + 30 * 60 * 1000) {
+    return res.status(409).json({ error: 'La cita no corresponde al horario vigente o ya venció. Contacta a la agencia.' });
+  }
 
   t.estado = 'EN_SALA';
   emit(ticketKey(agencia, id), 'estado', view(t));
@@ -541,41 +794,44 @@ app.post('/api/v1/agencies/:id/next', requireApiRole('admin'), (req, res) => {
   if (!agencyId || !agencies[agencyId]) return res.status(400).json({ error: 'Agencia no válida' });
 
   const ag = agencies[agencyId];
-  if (ag.serving >= ag.last) return res.status(409).json({ error: 'No hay turnos en cola' });
-
-  const previousTicket = [...tickets.values()].find(
-    (ticket) => ticket.agencia === ag.id && ticket.numero === ag.serving,
-  );
+  if (!agencyIsOpenNow(ag)) {
+    return res.status(409).json({ error: 'La agencia está fuera de su horario de atención' });
+  }
+  const previousTicket = [...tickets.values()].find((ticket) =>
+    ticket.agencia === ag.id && ticket.estado === 'ATENDIENDO');
   if (previousTicket?.estado === 'ATENDIENDO') {
     previousTicket.estado = 'ATENDIDO';
     emit(ticketKey(ag.id, previousTicket.id), 'estado', view(previousTicket));
   }
 
-  ag.serving += 1;
+  const now = Date.now();
+  const nextTicket = arrivedAppointments(ag.id).find((ticket) => ticket.citaAt <= now);
+  if (!nextTicket) {
+    return res.status(409).json({ error: 'No hay citas pendientes listas para llamar. Registra la llegada y espera la hora reservada.' });
+  }
 
-  for (const t of tickets.values()) {
-    if (t.agencia !== ag.id) continue;
-    const key = ticketKey(t.agencia, t.id);
+  nextTicket.estado = 'ATENDIENDO';
+  nextTicket.llamado = now;
+  emit(ticketKey(ag.id, nextTicket.id), 'estado', view(nextTicket));
 
-    if (t.numero === ag.serving) {
-      t.estado = 'ATENDIENDO';
-      t.llamado = Date.now();
-      emit(key, 'estado', view(t));
-    } else if (t.numero > ag.serving) {
-      const previos = t.numero - ag.serving - 1;
-      emit(key, 'estado', view(t));
-      if (previos <= PUSH_THRESHOLD && !t.notificado) {
-        t.notificado = true;
-        emit(key, 'push', { titulo: 'BCP Ticket Express', mensaje: 'Acércate a la agencia', restan: previos });
-      }
+  for (const ticket of arrivedAppointments(ag.id)) {
+    emit(ticketKey(ag.id, ticket.id), 'estado', view(ticket));
+    const previos = arrivedAppointments(ag.id).filter((waiting) => waiting.citaAt < ticket.citaAt).length;
+    if (previos <= PUSH_THRESHOLD && !ticket.notificado) {
+      ticket.notificado = true;
+      emit(ticketKey(ag.id, ticket.id), 'push', {
+        titulo: 'BCP Ticket Express',
+        mensaje: 'Tu cita se acerca. Acércate a ventanilla',
+        restan: previos,
+      });
     }
   }
 
   res.json({
     agencia: ag.id,
-    turno: `T${String(ag.serving).padStart(3, '0')}`,
-    atendiendo: ag.serving,
-    enCola: ag.last - ag.serving,
+    turno: nextTicket.id,
+    atendiendo: nextTicket.numero,
+    enCola: arrivedAppointments(ag.id).filter((ticket) => ticket.citaAt <= Date.now()).length,
   });
 });
 

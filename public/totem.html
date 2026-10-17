@@ -53,12 +53,17 @@
         msg.replaceChildren();
         const title = document.createElement('h2');
         const detail = document.createElement('p');
+        const persona = document.createElement('p');
         title.textContent = response.ok ? 'Bienvenido' : 'No pudimos validar tu turno';
         title.style.color = response.ok ? 'var(--ok)' : 'var(--rojo)';
         detail.textContent = response.ok
-          ? `Turno ${result.id} registrado en sala. Turnos antes que tú: ${result.turnosPrevios}.`
+          ? `Cita ${result.id} (${result.cita.fecha}, ${result.cita.hora}) registrada. Citas antes que tú: ${result.turnosPrevios}.`
           : result.error || 'Error de validación';
         msg.append(title, detail);
+        if (response.ok && result.persona) {
+          persona.textContent = `${result.persona.nombre} · DNI ${result.persona.dni}`;
+          msg.append(persona);
+        }
         msg.classList.remove('hidden');
       } catch (error) {
         msg.textContent = error.message || 'No se pudo conectar con el servidor.';

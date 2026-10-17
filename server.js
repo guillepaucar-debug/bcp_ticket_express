@@ -278,6 +278,12 @@ app.post('/api/v1/auth/login', async (req, res) => {
     if (!['user', 'admin'].includes(role)) {
       return res.status(403).json({ error: 'La cuenta todavía no tiene un rol asignado. Contacta al administrador.' });
     }
+    if (role === 'user' && !decodedToken.email_verified) {
+      return res.status(403).json({
+        code: 'EMAIL_NOT_VERIFIED',
+        error: 'Tu correo todavía no está verificado. Solicita un enlace nuevo y utiliza el más reciente que recibas.',
+      });
+    }
     if (role === 'user') {
       const dni = typeof req.body?.dni === 'string' ? req.body.dni.trim() : '';
       if (!/^\d{8}$/.test(dni)) {
@@ -291,15 +297,6 @@ app.post('/api/v1/auth/login', async (req, res) => {
       if (dniRecord.data()?.uid !== decodedToken.uid) {
         return res.status(401).json({ error: 'El DNI no coincide con el correo asociado a esta cuenta' });
       }
-    }
-    if (role === 'user' && !decodedToken.email_verified) {
-      try {
-        await sendVerificationEmail(authResult.idToken);
-      } catch (error) {
-        console.error('Could not resend verification email:', error.message);
-        return res.status(502).json({ error: 'No pudimos enviar el correo de verificación. Inténtalo de nuevo más tarde.' });
-      }
-      return res.status(403).json({ error: 'Verifica tu correo con el enlace que te enviamos para poder iniciar sesión.' });
     }
 
     const cookieName = sessionCookieName(role);
@@ -325,6 +322,52 @@ app.post('/api/v1/auth/login', async (req, res) => {
       return res.status(503).json({ error: 'No se puede validar el DNI. Configura una clave estable de al menos 32 caracteres en el servidor.' });
     }
     res.status(503).json({ error: 'No se pudo conectar con Firebase. Revisa la configuración del backend.' });
+  }
+});
+
+app.post('/api/v1/auth/resend-verification', async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+  const password = req.body?.password;
+  if (!email || typeof password !== 'string' || !password) {
+    return res.status(400).json({ error: 'Ingresa tu correo y contraseña para reenviar el enlace' });
+  }
+
+  try {
+    const apiKey = getFirebaseWebApiKey();
+    const authResponse = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const authResult = await authResponse.json();
+    if (!authResponse.ok) {
+      const firebaseError = authResult.error?.message || String(authResponse.status);
+      console.error('Firebase verification resend sign-in failed:', firebaseError);
+      if (['INVALID_LOGIN_CREDENTIALS', 'EMAIL_NOT_FOUND', 'INVALID_PASSWORD', 'INVALID_EMAIL'].includes(firebaseError)) {
+        return res.status(401).json({ error: 'Correo o contraseña incorrectos' });
+      }
+      if (firebaseError.startsWith('TOO_MANY_ATTEMPTS')) {
+        return res.status(429).json({ error: 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo' });
+      }
+      return res.status(502).json({ error: 'No se pudo validar la cuenta con Firebase Authentication' });
+    }
+
+    const decodedToken = await getFirebaseAuth().verifyIdToken(authResult.idToken);
+    if (decodedToken.role !== 'user') {
+      return res.status(403).json({ error: 'Esta opción es solo para cuentas de usuario' });
+    }
+    if (decodedToken.email_verified) {
+      return res.json({ message: 'Tu correo ya está verificado. Ya puedes iniciar sesión.' });
+    }
+
+    await sendVerificationEmail(authResult.idToken, apiKey);
+    res.json({ message: 'Enviamos un enlace nuevo. Revisa tu correo y utiliza el enlace más reciente.' });
+  } catch (error) {
+    console.error('Firebase verification email resend failed:', error.message);
+    res.status(503).json({ error: 'No se pudo enviar el correo de verificación. Inténtalo de nuevo más tarde.' });
   }
 });
 

@@ -280,6 +280,12 @@ summary {
   line-height: 1.5;
 }
 
+.login-message-success {
+  border-color: #a8d8bd;
+  background: #edf8f1;
+  color: var(--ok);
+}
+
 .auth-switch {
   margin: 18px 0 0;
   color: var(--gris);

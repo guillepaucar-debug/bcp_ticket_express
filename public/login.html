@@ -29,6 +29,7 @@
           <input id="password" name="password" type="password" autocomplete="current-password" required>
 
           <button id="login-button" type="submit">Ingresar</button>
+          <button id="resend-verification" class="hidden" type="button">Reenviar correo de verificación</button>
           <p id="login-message" class="login-message hidden" role="alert"></p>
         </form>
         <p class="auth-switch">¿Eres nuevo? <button id="show-register" class="text-button" type="button">Crear una cuenta</button></p>
@@ -65,6 +66,8 @@
     const loginSection = document.querySelector('#login-section');
     const registerSection = document.querySelector('#register-section');
     const apiBaseUrl = (window.BCP_CONFIG?.apiBaseUrl || '').replace(/\/+$/, '');
+    const loginMessage = document.querySelector('#login-message');
+    const resendButton = document.querySelector('#resend-verification');
 
     document.querySelector('#show-register').addEventListener('click', () => {
       loginSection.classList.add('hidden');
@@ -90,6 +93,8 @@
       const message = document.querySelector('#login-message');
       const loginButton = document.querySelector('#login-button');
       message.classList.add('hidden');
+      message.classList.remove('login-message-success');
+      resendButton.classList.add('hidden');
       loginButton.disabled = true;
       loginButton.textContent = 'Verificando…';
 
@@ -105,7 +110,10 @@
           }),
         });
         const result = await readJson(response);
-        if (!response.ok) throw new Error(result.error || 'No se pudo iniciar sesión.');
+        if (!response.ok) {
+          if (result.code === 'EMAIL_NOT_VERIFIED') resendButton.classList.remove('hidden');
+          throw new Error(result.error || 'No se pudo iniciar sesión.');
+        }
 
         window.location.assign(result.role === 'admin' ? '/ventanilla.html' : '/app.html');
       } catch (error) {
@@ -116,6 +124,39 @@
       } finally {
         loginButton.disabled = false;
         loginButton.textContent = 'Ingresar';
+      }
+    });
+
+    resendButton.addEventListener('click', async () => {
+      resendButton.disabled = true;
+      resendButton.textContent = 'Enviando…';
+      loginMessage.classList.add('hidden');
+      loginMessage.classList.remove('login-message-success');
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/auth/resend-verification`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.querySelector('#email').value,
+            password: document.querySelector('#password').value,
+          }),
+        });
+        const result = await readJson(response);
+        if (!response.ok) throw new Error(result.error || 'No se pudo reenviar el enlace.');
+        loginMessage.textContent = result.message;
+        loginMessage.classList.add('login-message-success');
+        loginMessage.classList.remove('hidden');
+        resendButton.classList.add('hidden');
+      } catch (error) {
+        loginMessage.textContent = error instanceof TypeError
+          ? 'No se pudo conectar con la API. Revisa config.js y la configuración del backend.'
+          : error.message || 'No se pudo reenviar el enlace.';
+        loginMessage.classList.remove('hidden');
+      } finally {
+        resendButton.disabled = false;
+        resendButton.textContent = 'Reenviar correo de verificación';
       }
     });
 
@@ -147,7 +188,6 @@
         document.querySelector('#register-form').reset();
         registerSection.classList.add('hidden');
         loginSection.classList.remove('hidden');
-        const loginMessage = document.querySelector('#login-message');
         loginMessage.textContent = result.verificationEmailSent
           ? 'Cuenta guardada en Firebase. Revisa tu correo y confirma el enlace antes de iniciar sesión.'
           : 'Cuenta guardada en Firebase, pero no se pudo enviar el correo. Intenta ingresar para reenviar el enlace de verificación.';
